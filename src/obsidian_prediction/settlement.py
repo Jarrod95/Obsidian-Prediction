@@ -2,6 +2,7 @@
 import asyncio
 import os
 import httpx
+from dotenv import load_dotenv
 from .paper_account import settle, state
 
 async def reconcile(client, db, fx, *, concurrency=8):
@@ -22,6 +23,7 @@ async def reconcile(client, db, fx, *, concurrency=8):
     return settled
 
 async def deliver(db):
+    load_dotenv()
     token=os.environ.get("TELEGRAM_BOT_TOKEN")
     chat=os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat:
