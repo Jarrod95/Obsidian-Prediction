@@ -67,7 +67,6 @@ def evaluate(yes, no, fx, budget, fee_rate, now):
     max_pairs = min(
         sum((x.size for x in yes.asks), D(0)),
         sum((x.size for x in no.asks), D(0)),
-        budget / fx,
     )
     hi = int(max_pairs)
     lo = 0
