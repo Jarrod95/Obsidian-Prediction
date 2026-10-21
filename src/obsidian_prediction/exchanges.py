@@ -67,3 +67,9 @@ class PublicPolymarket:
         if not token_id or not token_id.isdecimal():
             raise ValueError("Token id must be a numeric CLOB token id")
         return await self._get(f"{CLOB}/book", {"token_id": token_id})
+
+    async def market(self, market_id: str):
+        """Retrieve an individual market including closed/resolved market data."""
+        if not str(market_id).isdecimal():
+            raise ValueError('Market ID must be numeric')
+        return await self._get(f'{GAMMA}/markets/{market_id}')
