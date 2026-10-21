@@ -211,7 +211,7 @@ def render(command, args, bots, db, db_path, now=None):
     if command in ("today", "yesterday", "week", "month", "pnl", "settlements", "trades"):
         if command in ("pnl", "trades") and args and args[0] in bots:
             return "Bot-level realized results: NOT AVAILABLE (shared account; no verified attribution)."
-        if command in ("pnl", "trades") and args and args[0] not in bots:
+        if command in ("pnl", "trades") and args and args[0] not in bots and not (command == "trades" and args[0].isdecimal()):
             return "Unknown bot name. Use /bots."
         if not db:
             return "NOT AVAILABLE: paper database missing."
@@ -219,7 +219,7 @@ def render(command, args, bots, db, db_path, now=None):
         period = command if command in ("today", "yesterday", "week", "month") else "all"
         records = [r for r in records if in_period(r["settled_at"], period, now)]
         if command in ("settlements", "trades"):
-            raw = args[0] if args else "10"
+            raw = args[-1] if args else "10"
             if not raw.isdecimal() or not 1 <= int(raw) <= 20:
                 return "Count must be between 1 and 20."
             return ("PAPER SETTLEMENTS | realized, modeled costs only\n" +
