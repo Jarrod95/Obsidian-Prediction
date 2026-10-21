@@ -11,6 +11,7 @@ from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
 from .exchanges import PublicPolymarket
+from .fx import FXProvider
 from .markets import Book, Level, parity
 
 D = Decimal
@@ -235,7 +236,9 @@ def main():
     p.add_argument("--mode", choices=["observe", "paper"], default="observe")
     p.add_argument("--db", default="runtime/parity_paper.sqlite3")
     p.add_argument("--output", default="runtime/exports")
-    p.add_argument("--fx-aud-per-usd", required=False, default=None)
+    p.add_argument("--fx-aud-per-usd", required=False, default=None, help="Optional manual override; otherwise fetch free daily USD/AUD FX")
+    p.add_argument("--fx-max-age-days", type=int, default=7)
+    p.add_argument("--fx-refresh-seconds", type=int, default=3600)
     p.add_argument("--basket-aud", default="100")
     p.add_argument("--capital-aud", default="5000")
     p.add_argument("--min-edge-pct", default="1")
@@ -263,13 +266,32 @@ def main():
     elif args.command == "export":
         export(db, args.output)
     else:
-        if args.fx_aud_per_usd is None or D(args.fx_aud_per_usd) <= 0:
-            p.error("Explicit positive --fx-aud-per-usd required; not a live FX feed")
+        if args.fx_aud_per_usd is not None and D(args.fx_aud_per_usd) <= 0:
+            p.error("--fx-aud-per-usd must be positive")
+        if args.fx_max_age_days < 0 or args.fx_refresh_seconds < 60:
+            p.error("FX age must be nonnegative and refresh >= 60 seconds")
         async def loop():
             client = PublicPolymarket()
+            fx_provider = FXProvider(max_age_days=args.fx_max_age_days, refresh_seconds=args.fx_refresh_seconds)
             try:
                 while True:
-                    await scan(client, db, args)
+                    if args.fx_aud_per_usd is None:
+                        try:
+                            rate, observed = await fx_provider.latest()
+                        except Exception as exc:
+                            print(f"FX unavailable; skipping cycle: {type(exc).__name__}: {exc}")
+                            if args.once:
+                                break
+                            await asyncio.sleep(max(5, args.interval))
+                            continue
+                        args.fx_aud_per_usd = str(rate)
+                        print(f"FX USD/AUD={rate} | observation={observed} | source=Frankfurter daily reference")
+                        try:
+                            await scan(client, db, args)
+                        finally:
+                            args.fx_aud_per_usd = None
+                    else:
+                        await scan(client, db, args)
                     if args.once:
                         break
                     await asyncio.sleep(max(5, args.interval))
