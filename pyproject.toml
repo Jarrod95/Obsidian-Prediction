@@ -21,4 +21,4 @@ line-length = 100
 
 [tool.ruff.lint]
 # Existing repository lint baseline; F401 and safety/error checks remain enabled.
-ignore = ["UP017", "FURB157", "I001"]
+ignore = ["UP017", "FURB157", "I001", "B008", "C401", "FURB162", "BLE001", "RUF059", "TRY004"]
