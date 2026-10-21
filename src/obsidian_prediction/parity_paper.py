@@ -6,7 +6,7 @@ import json
 import sqlite3
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
@@ -85,14 +85,50 @@ def evaluate(yes, no, fx, budget, fee_rate, now):
             lo = mid + 1
     return best
 
+def closing_at(market):
+    """Return an explicit Gamma market end timestamp, or None if unknown."""
+    for key in ("endDate", "end_date_iso", "endDateIso"):
+        value = market.get(key)
+        if not value:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def prioritize_markets(markets, now, horizon_hours):
+    """Sort near-closing eligible markets first; do not mistake closure for settlement."""
+    cutoff = now + timedelta(hours=horizon_hours)
+    selected = []
+    for market in markets:
+        if tokens(market) is None:
+            continue
+        end = closing_at(market)
+        if end is None or not now < end <= cutoff:
+            continue
+        selected.append((end, market))
+    selected.sort(key=lambda item: item[0])
+    return [market for _, market in selected]
+
+
 async def scan(client, db, args):
     """Bounded parallel I/O; SQLite writes remain serialized on the event loop."""
     started = time.monotonic()
-    markets = []
+    discovered = []
     async for market in client.markets(limit=args.limit, max_pages=args.pages):
-        markets.append(market)
-        if len(markets) >= args.max_markets:
+        discovered.append(market)
+        if len(discovered) >= args.discovery_limit:
             break
+    markets = prioritize_markets(discovered, utc(), args.closing_within_hours)
+    if not args.strict_closing:
+        prioritized_ids = {str(m.get("id")) for m in markets}
+        markets.extend(m for m in discovered if str(m.get("id")) not in prioritized_ids)
+    markets = markets[:args.max_markets]
+    print(f"Discovery: {len(discovered)} markets; {len(prioritize_markets(discovered, utc(), args.closing_within_hours))} eligible closing within {args.closing_within_hours:g}h; scanning {len(markets)}")
     semaphore = asyncio.Semaphore(args.concurrency)
     stats = {"eligible": 0, "books": 0, "rejected": 0, "candidates": 0,
              "entered": 0, "errors": 0}
@@ -211,10 +247,13 @@ def main():
     p.add_argument("--interval", type=int, default=30)
     p.add_argument("--once", action="store_true")
     p.add_argument("--concurrency", type=int, default=12)
+    p.add_argument("--discovery-limit", type=int, default=2000)
+    p.add_argument("--closing-within-hours", type=float, default=72)
+    p.add_argument("--strict-closing", action="store_true")
     p.add_argument("--top", type=int, default=5)
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
-    if not 1 <= args.concurrency <= 32 or args.max_markets < 1 or args.top < 0:
+    if not 1 <= args.concurrency <= 32 or args.max_markets < 1 or args.top < 0 or args.discovery_limit < 1 or args.closing_within_hours <= 0:
         p.error("concurrency must be 1..32, max-markets >= 1 and top >= 0")
     db = db_open(args.db)
     if args.command == "doctor":
