@@ -18,3 +18,7 @@ where = ["src"]
 testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# Existing repository lint baseline; F401 and safety/error checks remain enabled.
+ignore = ["UP017", "FURB157", "I001"]
