@@ -6,11 +6,12 @@ import json
 import sqlite3
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
 from .exchanges import PublicPolymarket
+from .fx import FXProvider
 from .markets import Book, Level, parity
 
 D = Decimal
@@ -67,7 +68,6 @@ def evaluate(yes, no, fx, budget, fee_rate, now):
     max_pairs = min(
         sum((x.size for x in yes.asks), D(0)),
         sum((x.size for x in no.asks), D(0)),
-        budget / fx,
     )
     hi = int(max_pairs)
     lo = 0
@@ -86,18 +86,80 @@ def evaluate(yes, no, fx, budget, fee_rate, now):
             lo = mid + 1
     return best
 
-async def scan(client, db, args):
-    count = 0
-    async for market in client.markets(limit=args.limit, max_pages=args.pages):
-        if count >= args.max_markets:
-            break
-        count += 1
-        mapping = tokens(market)
-        if mapping is None:
+def closing_at(market):
+    """Return an explicit Gamma market end timestamp, or None if unknown."""
+    for key in ("endDate", "end_date_iso", "endDateIso"):
+        value = market.get(key)
+        if not value:
             continue
         try:
-            yes_raw, no_raw = await asyncio.gather(
-                client.orderbook(mapping["YES"]), client.orderbook(mapping["NO"]))
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def prioritize_markets(markets, now, horizon_hours):
+    """Sort near-closing eligible markets first; do not mistake closure for settlement."""
+    cutoff = now + timedelta(hours=horizon_hours)
+    selected = []
+    for market in markets:
+        if tokens(market) is None:
+            continue
+        end = closing_at(market)
+        if end is None or not now < end <= cutoff:
+            continue
+        selected.append((end, market))
+    selected.sort(key=lambda item: item[0])
+    return [market for _, market in selected]
+
+
+async def scan(client, db, args):
+    """Bounded parallel I/O; SQLite writes remain serialized on the event loop."""
+    started = time.monotonic()
+    discovered = []
+    async for market in client.markets(limit=args.limit, max_pages=args.pages):
+        discovered.append(market)
+        if len(discovered) >= args.discovery_limit:
+            break
+    markets = prioritize_markets(discovered, utc(), args.closing_within_hours)
+    if not args.strict_closing:
+        prioritized_ids = {str(m.get("id")) for m in markets}
+        markets.extend(m for m in discovered if str(m.get("id")) not in prioritized_ids)
+    markets = markets[:args.max_markets]
+    print(f"Discovery: {len(discovered)} markets; {len(prioritize_markets(discovered, utc(), args.closing_within_hours))} eligible closing within {args.closing_within_hours:g}h; scanning {len(markets)}")
+    semaphore = asyncio.Semaphore(args.concurrency)
+    stats = {"eligible": 0, "books": 0, "rejected": 0, "candidates": 0,
+             "entered": 0, "errors": 0}
+    top = []
+
+    async def fetch(market):
+        mapping = tokens(market)
+        if mapping is None:
+            return (market, None, None, None, "ineligible")
+        async with semaphore:
+            try:
+                yes_raw, no_raw = await asyncio.gather(
+                    client.orderbook(mapping["YES"]), client.orderbook(mapping["NO"]))
+                return (market, mapping, yes_raw, no_raw, None)
+            except Exception as exc:
+                return (market, mapping, None, None, f"{type(exc).__name__}: {exc}")
+
+    tasks = [asyncio.create_task(fetch(m)) for m in markets]
+    for task in asyncio.as_completed(tasks):
+        market, mapping, yes_raw, no_raw, error = await task
+        if mapping is None:
+            continue
+        stats["eligible"] += 1
+        if error:
+            stats["errors"] += 1
+            if args.verbose:
+                print("Book fetch failed:", market.get("id"), error[:180])
+            continue
+        stats["books"] += 1
+        try:
             now = utc()
             yes = book(mapping["YES"], yes_raw, now)
             no = book(mapping["NO"], no_raw, now)
@@ -110,6 +172,9 @@ async def scan(client, db, args):
             market_id = str(market.get("id", ""))
             sid = str(uuid.uuid4())
             decision = "REJECTED" if reason != "candidate" else "CANDIDATE"
+            stats["candidates" if reason == "candidate" else "rejected"] += 1
+            if op:
+                top.append((edge, market_id, market.get("question", "")[:65]))
             with db:
                 db.execute("""INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (sid, now.isoformat(), market_id, market.get("question"),
@@ -120,10 +185,13 @@ async def scan(client, db, args):
                      str(op.net_edge * D(args.fx_aud_per_usd)) if op else None,
                      str(edge), decision, reason))
                 if args.mode == "paper" and reason == "candidate":
-                    open_count = db.execute("SELECT COUNT(*) FROM baskets WHERE status='OPEN_HEDGED'").fetchone()[0]
-                    deployed = D(str(db.execute("SELECT COALESCE(SUM(CAST(cost_aud AS REAL)),0) FROM baskets WHERE status='OPEN_HEDGED'").fetchone()[0]))
-                    existing = db.execute("SELECT 1 FROM baskets WHERE market_id=? AND status='OPEN_HEDGED'", (market_id,)).fetchone()
-                    if open_count < args.max_open and not existing and deployed + cost * D(args.fx_aud_per_usd) <= D(args.capital_aud):
+                    open_rows = db.execute(
+                        "SELECT market_id, cost_aud FROM baskets WHERE status='OPEN_HEDGED'"
+                    ).fetchall()
+                    deployed = sum((D(row[1]) for row in open_rows), D(0))
+                    if (len(open_rows) < args.max_open
+                            and market_id not in {row[0] for row in open_rows}
+                            and deployed + cost * D(args.fx_aud_per_usd) <= D(args.capital_aud)):
                         bid = str(uuid.uuid4())
                         db.execute("INSERT INTO baskets VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                             (bid, sid, market_id, now.isoformat(), "OPEN_HEDGED",
@@ -131,11 +199,21 @@ async def scan(client, db, args):
                              str(op.net_edge * D(args.fx_aud_per_usd)), None, None, None))
                         db.execute("INSERT INTO events VALUES (?,?,?,?,?)",
                             (str(uuid.uuid4()), now.isoformat(), bid, "OPTIMISTIC_PAPER_ENTRY",
-                             json.dumps({"yes": yes_raw, "no": no_raw, "warning": "snapshot fill only; not execution evidence"})))
-                        print("PAPER ENTRY", market_id, "AUD", cost * D(args.fx_aud_per_usd), "expected edge %", edge)
+                             json.dumps({"yes": yes_raw, "no": no_raw,
+                                         "warning": "snapshot fill only; not execution evidence"})))
+                        stats["entered"] += 1
+                        print("PAPER ENTRY", market_id, "AUD",
+                              cost * D(args.fx_aud_per_usd), "expected edge %", edge)
         except Exception as exc:
-            print("Market skipped", market.get("id"), type(exc).__name__, str(exc)[:180])
-    print("Scanned", count, "markets")
+            stats["errors"] += 1
+            if args.verbose:
+                print("Market skipped", market.get("id"), type(exc).__name__, str(exc)[:180])
+    elapsed = time.monotonic() - started
+    print(f"Scanned {len(markets)} in {elapsed:.1f}s | eligible={stats['eligible']} "
+          f"books={stats['books']} candidates={stats['candidates']} "
+          f"entered={stats['entered']} rejected={stats['rejected']} errors={stats['errors']}")
+    for edge, mid, question in sorted(top, reverse=True)[:args.top]:
+        print(f"  top edge={edge:.3f}% market={mid} {question}")
 
 def report(db):
     for table in ("signals", "baskets", "events"):
@@ -158,7 +236,9 @@ def main():
     p.add_argument("--mode", choices=["observe", "paper"], default="observe")
     p.add_argument("--db", default="runtime/parity_paper.sqlite3")
     p.add_argument("--output", default="runtime/exports")
-    p.add_argument("--fx-aud-per-usd", required=False, default=None)
+    p.add_argument("--fx-aud-per-usd", required=False, default=None, help="Optional manual override; otherwise fetch free daily USD/AUD FX")
+    p.add_argument("--fx-max-age-days", type=int, default=7)
+    p.add_argument("--fx-refresh-seconds", type=int, default=3600)
     p.add_argument("--basket-aud", default="100")
     p.add_argument("--capital-aud", default="5000")
     p.add_argument("--min-edge-pct", default="1")
@@ -169,7 +249,15 @@ def main():
     p.add_argument("--pages", type=int, default=5)
     p.add_argument("--interval", type=int, default=30)
     p.add_argument("--once", action="store_true")
+    p.add_argument("--concurrency", type=int, default=12)
+    p.add_argument("--discovery-limit", type=int, default=2000)
+    p.add_argument("--closing-within-hours", type=float, default=72)
+    p.add_argument("--strict-closing", action="store_true")
+    p.add_argument("--top", type=int, default=5)
+    p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
+    if not 1 <= args.concurrency <= 32 or args.max_markets < 1 or args.top < 0 or args.discovery_limit < 1 or args.closing_within_hours <= 0:
+        p.error("concurrency must be 1..32, max-markets >= 1 and top >= 0")
     db = db_open(args.db)
     if args.command == "doctor":
         print("read-only API; live orders impossible; db", args.db)
@@ -178,13 +266,32 @@ def main():
     elif args.command == "export":
         export(db, args.output)
     else:
-        if args.fx_aud_per_usd is None or D(args.fx_aud_per_usd) <= 0:
-            p.error("Explicit positive --fx-aud-per-usd required; not a live FX feed")
+        if args.fx_aud_per_usd is not None and D(args.fx_aud_per_usd) <= 0:
+            p.error("--fx-aud-per-usd must be positive")
+        if args.fx_max_age_days < 0 or args.fx_refresh_seconds < 60:
+            p.error("FX age must be nonnegative and refresh >= 60 seconds")
         async def loop():
             client = PublicPolymarket()
+            fx_provider = FXProvider(max_age_days=args.fx_max_age_days, refresh_seconds=args.fx_refresh_seconds)
             try:
                 while True:
-                    await scan(client, db, args)
+                    if args.fx_aud_per_usd is None:
+                        try:
+                            rate, observed = await fx_provider.latest()
+                        except Exception as exc:
+                            print(f"FX unavailable; skipping cycle: {type(exc).__name__}: {exc}")
+                            if args.once:
+                                break
+                            await asyncio.sleep(max(5, args.interval))
+                            continue
+                        args.fx_aud_per_usd = str(rate)
+                        print(f"FX USD/AUD={rate} | observation={observed} | source=Frankfurter daily reference")
+                        try:
+                            await scan(client, db, args)
+                        finally:
+                            args.fx_aud_per_usd = None
+                    else:
+                        await scan(client, db, args)
                     if args.once:
                         break
                     await asyncio.sleep(max(5, args.interval))
