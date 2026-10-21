@@ -24,6 +24,8 @@ def test_account_compounds_and_settles(tmp_path):
     with db:
         assert not settle(db,"b1",market,D("1.5"))
     assert db.execute("SELECT COUNT(*) FROM telegram_outbox").fetchone()[0]==1
+    settlement=db.execute("SELECT payout_usd,payout_aud,pnl_usd,pnl_aud,pnl_pct FROM paper_settlements WHERE basket_id=?",("b1",)).fetchone()
+    assert tuple(map(D,settlement)) == (D("100"),D("150"),D("34"),D("51"),D("51")/D("99")*100)
     assert db.execute("SELECT COUNT(*) FROM paper_ledger").fetchone()[0]==3
 
 def test_unresolved_not_paid():
