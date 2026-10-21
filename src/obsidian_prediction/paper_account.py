@@ -34,13 +34,22 @@ def migrate(db, initial_capital="5000"):
         if column not in cols:
             db.execute(f"ALTER TABLE baskets ADD COLUMN {column} {typ}")
     if db.execute("SELECT COUNT(*) FROM paper_accounts").fetchone()[0] == 0:
-        old = db.execute("SELECT COUNT(*) FROM baskets").fetchone()[0]
-        if old:
-            raise RuntimeError("Existing baskets require explicit reconciliation before initializing account; refusing to silently reset balance")
+        existing = db.execute("SELECT id,cost_aud,status FROM baskets").fetchall()
+        if any(row[2] != "OPEN_HEDGED" for row in existing):
+            raise RuntimeError("Historical closed baskets require manual reconciliation before account migration")
+        deployed = sum((D(row[1]) for row in existing), D(0))
+        cash = D(initial_capital) - deployed
+        if cash < 0:
+            raise RuntimeError("Legacy open baskets exceed initial capital; manual reconciliation required")
         db.execute("INSERT INTO paper_accounts(id,initial_aud,cash_aud,realized_aud) VALUES(1,?,?,?)",
-                   (str(initial_capital), str(initial_capital), "0"))
+                   (str(initial_capital), str(cash), "0"))
         db.execute("INSERT INTO paper_ledger VALUES(?,?,?,?,?,?)",
                    (str(uuid.uuid4()), None, "INITIAL_DEPOSIT", str(initial_capital), str(initial_capital), now_iso()))
+        running = D(initial_capital)
+        for bid, cost, _ in existing:
+            running -= D(cost)
+            db.execute("INSERT INTO paper_ledger VALUES(?,?,?,?,?,?)",
+                       (str(uuid.uuid4()), bid, "ENTRY", str(-D(cost)), str(running), now_iso()))
     db.commit()
 
 def state(db):
