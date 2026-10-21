@@ -13,9 +13,9 @@ git switch feat/parity-expiry-priority-bot-layout
 
 ## Fast, near-closing scan
 ```powershell
-.\.venv\Scripts\python.exe bots/forward_testing/polymarket_yes_no_parity/bot.py run --mode paper --fx-aud-per-usd 1.49 --discovery-limit 2000 --max-markets 500 --pages 30 --closing-within-hours 48 --strict-closing --concurrency 16 --interval 30
+.\.venv\Scripts\python.exe bots/forward_testing/polymarket_yes_no_parity/bot.py run --mode paper --discovery-limit 2000 --max-markets 500 --pages 30 --closing-within-hours 48 --strict-closing --concurrency 16 --interval 30
 ```
-The FX argument is illustrative, not a current rate. Strict closing means the bot scans only eligible markets whose advertised close time is within the next 48 hours. Remove `--strict-closing` to fill the remaining scan slots with other markets. Gamma pagination may limit how many markets are discovered; increasing `--pages` does not guarantee 2000 markets. Closing is not the same as final resolution.
+FX now defaults to Frankfurter's free, no-key USD/AUD daily reference rate, cached for an hour. The observed date and source are printed each cycle. This is **not an intraday executable FX quote**. The scanner skips a cycle if FX is unavailable or older than 7 days. For research only, a manual `--fx-aud-per-usd` override remains available. Strict closing means the bot scans only eligible markets whose advertised close time is within the next 48 hours. Remove `--strict-closing` to fill the remaining scan slots with other markets. Gamma pagination may limit how many markets are discovered; increasing `--pages` does not guarantee 2000 markets. Closing is not the same as final resolution.
 
 ## Inspect the local database
 ```powershell
@@ -36,3 +36,6 @@ The research notebook compares YES/NO ask-depth, expected payout and hypothetica
 
 ## Remaining implementation
 Verified FX, venue fees, synchronized book timestamps, realistic paired execution, settlement and realized P/L, idempotent reconciliation, structured monitoring.
+
+## FX source (v0.2.1)
+Default: https://api.frankfurter.dev/v2/rate/USD/AUD (free, no API key). Rates are daily reference mid-rates, not tick-level FX. Cached for 3600 seconds, maximum observation age 7 calendar days; failure skips the scan rather than using a fabricated rate. `--fx-refresh-seconds` and `--fx-max-age-days` customize the policy. The FX rate is stored on each signal; source/date appear in console output. A future migration should store FX source/date in dedicated database fields.
