@@ -55,7 +55,9 @@ def sizing(db, fraction=D("0.02"), max_exposure=D("0.10"), max_positions=50):
     s = state(db)
     slots = min(max_positions, max(1, int(s["equity"] / D("1000"))))
     count = db.execute("SELECT COUNT(*) FROM baskets WHERE status='OPEN_HEDGED'").fetchone()[0]
-    capacity = max(D(0), min(s["cash"], s["equity"]*max_exposure-s["deployed"]))
+    # Gradually allow more capital at work as equity grows, capped at 30%.
+    exposure = min(D("0.30"), max_exposure + D(max(0, int((s["equity"]-D("5000")) / D("5000")))) * D("0.025"))
+    capacity = max(D(0), min(s["cash"], s["equity"]*exposure-s["deployed"]))
     return max(D(0), min(s["equity"]*fraction, capacity)), slots, count
 
 def record_entry(db, *, basket_id, signal_id, market_id, question, pairs, cost_usd,
@@ -123,8 +125,9 @@ def settle(db, basket_id, market, fx):
                   realized_profit_usd=?,realized_profit_aud=? WHERE id=?""",
                (ts,str(pnl_usd),str(pnl_aud),basket_id))
     cash=state(db)["cash"]+payout_aud
-    db.execute("UPDATE paper_accounts SET cash_aud=?, realized_aud=CAST(realized_aud AS REAL)+? WHERE id=1",
-               (str(cash),str(pnl_aud)))
+    realized=state(db)["realized"]+pnl_aud
+    db.execute("UPDATE paper_accounts SET cash_aud=?, realized_aud=? WHERE id=1",
+               (str(cash),str(realized)))
     db.execute("INSERT INTO paper_ledger VALUES(?,?,?,?,?,?)",
                (str(uuid.uuid4()),basket_id,"SETTLEMENT",str(payout_aud),str(cash),ts))
     message=(f"Position Closed\nMarket: {row[1] or row[0]}\n"
