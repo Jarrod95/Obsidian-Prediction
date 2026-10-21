@@ -65,7 +65,7 @@ def sizing(db, fraction=D("0.02"), max_exposure=D("0.10"), max_positions=50):
     slots = min(max_positions, max(1, int(s["equity"] / D("1000"))))
     count = db.execute("SELECT COUNT(*) FROM baskets WHERE status='OPEN_HEDGED'").fetchone()[0]
     # Gradually allow more capital at work as equity grows, capped at 30%.
-    exposure = min(D("0.30"), max_exposure + D(max(0, int((s["equity"]-D("5000")) / D("5000")))) * D("0.025"))
+    exposure = min(D("0.30"), max_exposure, D(slots)*fraction) if s["equity"] <= D("5000") else min(D("0.30"), D(slots)*fraction)
     capacity = max(D(0), min(s["cash"], s["equity"]*exposure-s["deployed"]))
     return max(D(0), min(s["equity"]*fraction, capacity)), slots, count
 
