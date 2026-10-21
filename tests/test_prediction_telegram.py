@@ -2,12 +2,11 @@
 import json
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
 from obsidian_prediction.prediction_telegram import (
-    authorized, connection, in_period, registry, render, settings, window,
+    authorized, connection, in_period, registry, render, settings,
 )
 
 
