@@ -1,1 +1,25 @@
-[]
+[
+  {
+    "id": "polymarket_yes_no_parity",
+    "enabled": true,
+    "module": "obsidian_prediction.parity_paper",
+    "args": [
+      "run",
+      "--mode",
+      "paper",
+      "--discovery-limit",
+      "2000",
+      "--max-markets",
+      "500",
+      "--pages",
+      "30",
+      "--closing-within-hours",
+      "48",
+      "--strict-closing",
+      "--concurrency",
+      "16",
+      "--interval",
+      "30"
+    ]
+  }
+]
