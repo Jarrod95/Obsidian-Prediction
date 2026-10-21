@@ -13,6 +13,8 @@ from pathlib import Path
 from .exchanges import PublicPolymarket
 from .fx import FXProvider
 from .markets import Book, Level, parity
+from .paper_account import migrate, sizing, state, record_entry
+from .settlement import reconcile, deliver
 
 D = Decimal
 BOT = "polymarket_yes_no_parity"
@@ -163,7 +165,8 @@ async def scan(client, db, args):
             now = utc()
             yes = book(mapping["YES"], yes_raw, now)
             no = book(mapping["NO"], no_raw, now)
-            op = evaluate(yes, no, D(args.fx_aud_per_usd), D(args.basket_aud),
+            budget, slots, count = sizing(db)
+            op = evaluate(yes, no, D(args.fx_aud_per_usd), budget,
                           D(args.fee_rate), now)
             cost = (op.cost + op.fees + op.slippage) if op else D(0)
             edge = op.net_edge / cost * 100 if op and cost else D(0)
@@ -185,18 +188,15 @@ async def scan(client, db, args):
                      str(op.net_edge * D(args.fx_aud_per_usd)) if op else None,
                      str(edge), decision, reason))
                 if args.mode == "paper" and reason == "candidate":
-                    open_rows = db.execute(
-                        "SELECT market_id, cost_aud FROM baskets WHERE status='OPEN_HEDGED'"
-                    ).fetchall()
-                    deployed = sum((D(row[1]) for row in open_rows), D(0))
-                    if (len(open_rows) < args.max_open
-                            and market_id not in {row[0] for row in open_rows}
-                            and deployed + cost * D(args.fx_aud_per_usd) <= D(args.capital_aud)):
-                        bid = str(uuid.uuid4())
-                        db.execute("INSERT INTO baskets VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                            (bid, sid, market_id, now.isoformat(), "OPEN_HEDGED",
-                             str(op.pair_size), str(cost), str(cost * D(args.fx_aud_per_usd)),
-                             str(op.net_edge * D(args.fx_aud_per_usd)), None, None, None))
+                    bid = str(uuid.uuid4())
+                    entered = record_entry(
+                        db, basket_id=bid, signal_id=sid, market_id=market_id,
+                        question=market.get("question"), pairs=op.pair_size,
+                        cost_usd=cost, cost_aud=cost*D(args.fx_aud_per_usd),
+                        expected_profit_aud=op.net_edge*D(args.fx_aud_per_usd),
+                        fx=D(args.fx_aud_per_usd), yes_token=mapping["YES"],
+                        no_token=mapping["NO"], yes_book=yes_raw, no_book=no_raw)
+                    if entered:
                         db.execute("INSERT INTO events VALUES (?,?,?,?,?)",
                             (str(uuid.uuid4()), now.isoformat(), bid, "OPTIMISTIC_PAPER_ENTRY",
                              json.dumps({"yes": yes_raw, "no": no_raw,
@@ -216,14 +216,15 @@ async def scan(client, db, args):
         print(f"  top edge={edge:.3f}% market={mid} {question}")
 
 def report(db):
-    for table in ("signals", "baskets", "events"):
+    for table in ("signals", "baskets", "events", "paper_accounts", "paper_ledger", "paper_settlements", "paper_fills", "telegram_outbox"):
         print(table, db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0])
     print("Open deployed AUD", db.execute("SELECT COALESCE(SUM(CAST(cost_aud AS REAL)),0) FROM baskets WHERE status='OPEN_HEDGED'").fetchone()[0])
-    print("Realized P/L: unavailable until authoritative settlement is implemented")
+    s = state(db)
+    print(f"Cash AUD {s['cash']:.2f} | Deployed AUD {s['deployed']:.2f} | Equity AUD {s['equity']:.2f} | Realized P/L AUD {s['realized']:.2f}")
 
 def export(db, output):
     Path(output).mkdir(parents=True, exist_ok=True)
-    for table in ("signals", "baskets", "events"):
+    for table in ("signals", "baskets", "events", "paper_accounts", "paper_ledger", "paper_settlements", "paper_fills", "telegram_outbox"):
         cursor = db.execute("SELECT * FROM " + table)
         with (Path(output) / (table + ".csv")).open("w", newline="", encoding="utf-8") as fh:
             writer = csv.writer(fh)
@@ -259,6 +260,7 @@ def main():
     if not 1 <= args.concurrency <= 32 or args.max_markets < 1 or args.top < 0 or args.discovery_limit < 1 or args.closing_within_hours <= 0:
         p.error("concurrency must be 1..32, max-markets >= 1 and top >= 0")
     db = db_open(args.db)
+    migrate(db, initial_capital=args.capital_aud)
     if args.command == "doctor":
         print("read-only API; live orders impossible; db", args.db)
     elif args.command == "report":
@@ -287,10 +289,14 @@ def main():
                         args.fx_aud_per_usd = str(rate)
                         print(f"FX USD/AUD={rate} | observation={observed} | source=Frankfurter daily reference")
                         try:
+                            await reconcile(client, db, D(args.fx_aud_per_usd))
+                            await deliver(db)
                             await scan(client, db, args)
                         finally:
                             args.fx_aud_per_usd = None
                     else:
+                        await reconcile(client, db, D(args.fx_aud_per_usd))
+                        await deliver(db)
                         await scan(client, db, args)
                     if args.once:
                         break
