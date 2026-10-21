@@ -130,7 +130,7 @@ def in_period(ts, period, now=None):
 
 def safe(value, limit=100):
     """Defang control characters, escape sequences and accidental long values."""
-    return re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(value or ""))[:limit]
+    return re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", " ", str(value or ""))[:limit]
 
 
 def render(command, args, bots, db, db_path, now=None):
