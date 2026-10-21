@@ -127,7 +127,7 @@ def settle(db, basket_id, market, fx):
     pnl_pct=pnl_aud/cost_aud*100
     ts=now_iso()
     # Called within one SQLite transaction by the caller.
-    db.execute("""INSERT INTO paper_settlements VALUES(?,?,?,?,?,?,?,?,?,?)""",
+    db.execute("""INSERT INTO paper_settlements (basket_id,market_id,winner,payout_usd,payout_aud,pnl_usd,pnl_aud,pnl_pct,fx_aud_per_usd,settled_at,evidence) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                (basket_id,row[0],winner,str(payout_usd),str(payout_aud),
                 str(pnl_usd),str(pnl_aud),str(pnl_pct),str(fx),ts,json.dumps(market)))
     db.execute("""UPDATE baskets SET status='SETTLED',closed_at=?,
