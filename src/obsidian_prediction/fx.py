@@ -1,5 +1,4 @@
 """Free daily USD/AUD reference FX, with explicit source date and cache."""
-import asyncio
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import httpx

@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 import pytest
 from obsidian_prediction.fx import parse_fx

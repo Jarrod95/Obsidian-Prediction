@@ -7,7 +7,7 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 from pathlib import Path
 
 from .exchanges import PublicPolymarket

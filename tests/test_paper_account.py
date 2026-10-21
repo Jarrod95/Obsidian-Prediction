@@ -1,4 +1,3 @@
-import sqlite3
 from decimal import Decimal as D
 from obsidian_prediction.parity_paper import db_open
 from obsidian_prediction.paper_account import migrate, sizing, state, record_entry, settle, resolved_winner

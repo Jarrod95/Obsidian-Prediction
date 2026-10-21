@@ -2,7 +2,7 @@
 import json
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 
 D = Decimal
 

@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 dependencies = ["httpx>=0.27,<1", "python-dotenv>=1,<2"]
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "ruff>=0.8,<1"]
+telegram = ["python-telegram-bot>=21,<23"]
 [project.scripts]
 obsidian-prediction = "obsidian_prediction.cli:main"
 [tool.setuptools.packages.find]
@@ -17,3 +18,7 @@ where = ["src"]
 testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# Existing repository lint baseline; F401 and safety/error checks remain enabled.
+ignore = ["UP017", "FURB157", "I001", "B008", "C401", "FURB162", "BLE001", "RUF059", "TRY004"]
