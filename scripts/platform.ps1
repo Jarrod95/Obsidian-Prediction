@@ -42,10 +42,10 @@ function StartBot($entry) {
     if ($existing) { Write-Host "$($entry.id): already running PID $($existing.ProcessId)"; return }
     $module = [string]$entry.module
     if (!$module -or $module -notmatch '^[A-Za-z_][A-Za-z_0-9]*(\.[A-Za-z_][A-Za-z_0-9]*)*$') { throw "Invalid module for $($entry.id)" }
-    $args = @("-m", $module) + @($entry.args | ForEach-Object { [string]$_ })
+    $launchArgs = @("-u", "-m", $module) + @($entry.args | ForEach-Object { [string]$_ })
     $stdout = Join-Path $Runtime "$($entry.id).stdout.log"
     $stderr = Join-Path $Runtime "$($entry.id).stderr.log"
-    $proc = Start-Process -FilePath $Python -ArgumentList $args -WorkingDirectory $Root -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+    $proc = Start-Process -FilePath $Python -ArgumentList $launchArgs -WorkingDirectory $Root -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
     $proc.Refresh()
     $started = (Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.Id)").CreationDate
     @{ pid=$proc.Id; started=([datetime]$started).ToUniversalTime().ToString("o"); module=$module } |
