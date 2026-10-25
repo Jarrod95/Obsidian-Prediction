@@ -22,6 +22,7 @@ LOG = logging.getLogger("copy_paper")
 D = lambda x: Decimal(str(x))
 DATA = "https://data-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
+GAMMA = "https://gamma-api.polymarket.com"
 
 
 def utcnow():
@@ -88,20 +89,65 @@ class Worker:
         return value
 
     def source(self):
-        rows = []
-        offset = 0
+        result = {}
+        cursor = None
+        seen = set()
         while True:
-            page = self.api(DATA, "/positions", {"user": self.wallet, "limit": 500,
-                                                 "offset": offset, "sizeThreshold": 0})
+            params = {"user": self.wallet, "status": "OPEN", "limit": 500,
+                      "filter_type": "TOKENS", "filter_amount": 0}
+            if cursor:
+                params["cursor"] = cursor
+            response = self.http.get(DATA + "/v2/positions", params=params)
+            response.raise_for_status()
+            body = response.json()
+            page = body.get("data")
             if not isinstance(page, list):
-                raise RuntimeError("Unexpected positions response; refusing to trade")
-            rows.extend(page)
-            if len(page) < 500:
-                break
-            offset += 500
-            if offset > 20000:
-                raise RuntimeError("Source pagination exceeded safe bound")
-        return {str(p["asset"]): p for p in rows if D(p.get("size", 0)) > 0}
+                raise RuntimeError("Invalid v2 positions response")
+            for p in page:
+                asset = str(p.get("token_id") or p.get("asset") or "")
+                size = p.get("current_size", p.get("size"))
+                if not asset or size is None:
+                    raise RuntimeError("Position missing asset or size")
+                if D(size) > 0:
+                    result[asset] = {"asset": asset, "size": str(size),
+                                     "conditionId": p.get("condition_id", p.get("conditionId", "")),
+                                     "outcome": p.get("outcome", "")}
+            cursor = (body.get("pagination") or {}).get("next_cursor")
+            if not cursor:
+                return result
+            if cursor in seen:
+                raise RuntimeError("Repeated v2 cursor")
+            seen.add(cursor)
+
+    def resolution(self, condition_id, asset):
+        if not condition_id:
+            return None
+        response = self.http.get(GAMMA + "/markets", params={"condition_ids": condition_id, "limit": 100})
+        response.raise_for_status()
+        markets = response.json()
+        if not isinstance(markets, list):
+            raise RuntimeError("Invalid Gamma response")
+        matching = [m for m in markets if str(m.get("conditionId", "")).lower() == str(condition_id).lower()]
+        if len(matching) != 1:
+            return None
+        market = matching[0]
+        if not market.get("closed"):
+            return None
+        tokens = market.get("clobTokenIds")
+        prices = market.get("outcomePrices")
+        if isinstance(tokens, str):
+            tokens = json.loads(tokens)
+        if isinstance(prices, str):
+            prices = json.loads(prices)
+        if not isinstance(tokens, list) or not isinstance(prices, list) or len(tokens) != len(prices):
+            return None
+        identifiers = [str(token) for token in tokens]
+        if asset not in identifiers:
+            return None
+        values = [D(price) for price in prices]
+        if values.count(D(1)) != 1 or any(v not in (D(0), D(1)) for v in values):
+            return None
+        return values[identifiers.index(asset)]
 
     def price(self, asset, side):
         # Buy at ask, sell at bid; never fill at an optimistic midpoint.
@@ -138,28 +184,28 @@ class Worker:
             LOG.info("Initialized baseline of %d source holdings; waiting for changes", len(source))
             return
         baseline = json.loads(self.get("baseline"))
-        # Resolve paper positions from public settlement flags, even if source holdings disappear.
+        # Settle against the market itself, independent of source redemption.
         for asset, row in list(holdings.items()):
-            item = source.get(asset, {})
-            if not item:
-                try:
-                    resolved = self.api(DATA, "/positions", {"user": self.wallet, "limit": 500, "sizeThreshold": 0})
-                    item = next((p for p in resolved if str(p.get("asset")) == asset), {})
-                except httpx.HTTPError:
-                    item = {}
-            if not item.get("redeemable"):
+            try:
+                payout = self.resolution(row[1], asset)
+            except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+                LOG.warning("Settlement deferred %s: %s", asset, exc)
                 continue
-            # Redeemable does not alone prove the outcome: require explicit outcome payout.
-            payout = item.get("payout")
-            if payout is None or D(payout) not in (D(0), D(1)):
-                LOG.warning("Settlement pending verified payout for %s", asset)
+            if payout is None:
                 continue
             qty, basis = D(row[3]), D(row[4])
+            proceeds = qty * payout
             self.conn.execute("BEGIN IMMEDIATE")
             try:
-                self.fill(asset, "SELL", qty, D(payout), qty * D(payout) - basis, "resolved")
+                self.set("cash_usd", D(self.get("cash_usd")) + proceeds)
+                self.set("realized_usd", D(self.get("realized_usd")) + proceeds - basis)
+                self.conn.execute(
+                    "INSERT INTO fills(at,asset,side,shares,price,cash_change_usd,realized_pnl_usd,reason) VALUES (?,?,?,?,?,?,?,?)",
+                    (utcnow(), asset, "SETTLE", str(qty), str(payout),
+                     str(proceeds), str(proceeds - basis), "market_resolution"))
                 self.conn.execute("DELETE FROM positions WHERE asset=?", (asset,))
-                self.conn.execute("INSERT OR REPLACE INTO settled VALUES (?,?,?)", (asset, str(payout), utcnow()))
+                self.conn.execute("INSERT OR REPLACE INTO settled VALUES (?,?,?)",
+                                  (asset, str(payout), utcnow()))
                 self.conn.execute("COMMIT")
             except Exception:
                 self.conn.execute("ROLLBACK")
@@ -178,7 +224,7 @@ class Worker:
                     LOG.warning("Sell deferred %s: %s", asset, exc)
                     continue
                 basis = D(row[4]) * qty / held
-                pnl = qty * px - basis
+                pnl = qty * px * (1 - D(os.getenv('COPY_FEE_RATE', '0'))) - basis
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
                     self.fill(asset, "SELL", qty, px, pnl, "source_reduced")
