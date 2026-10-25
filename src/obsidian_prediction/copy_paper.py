@@ -124,7 +124,7 @@ class Worker:
     def resolution(self, condition_id, asset):
         if not condition_id:
             return None
-        response = self.http.get(GAMMA + "/markets", params={"condition_ids": condition_id, "limit": 100})
+        response = self.http.get(GAMMA + "/markets", params={"condition_id": condition_id, "limit": 100})
         response.raise_for_status()
         markets = response.json()
         if not isinstance(markets, list):
