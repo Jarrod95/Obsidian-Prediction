@@ -12,6 +12,7 @@ import os
 import sqlite3
 import re
 import time
+from .copy_events import setup as setup_events, fetch_activity, ingest
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -56,6 +57,7 @@ class Worker:
           at TEXT, cash_usd TEXT, equity_usd TEXT, unrealized_usd TEXT);
         """)
         self.conn.execute("CREATE TABLE IF NOT EXISTS settled(asset TEXT PRIMARY KEY, payout TEXT, at TEXT)")
+        setup_events(self.conn)
         self.http = httpx.Client(timeout=15, headers={"User-Agent": "ObsidianPrediction-Paper/1"})
         if self.get("cash_usd") is None:
             fx = self.fx()
@@ -175,21 +177,22 @@ class Worker:
                           (utcnow(), asset, side, str(shares), str(price), str(change), str(pnl), reason))
 
     def tick(self):
-        source = self.source()  # fetch completely before changing state
-        holdings = self.positions()
-        if self.get("initialized") == "0":
-            # Begin flat; don't retroactively buy every historic position.
-            self.set("initialized", "1")
-            self.set("baseline", json.dumps({a: str(p["size"]) for a, p in source.items()}))
-            LOG.info("Initialized baseline of %d source holdings; waiting for changes", len(source))
+        # Initial start is flat. Source events are journaled from now onward.
+        if self.get("event_watermark") is None:
+            self.set("event_watermark", int(time.time()))
+            LOG.info("Started source trade journal at current timestamp")
             return
-        baseline = json.loads(self.get("baseline"))
-        # Settle against the market itself, independent of source redemption.
-        for asset, row in list(holdings.items()):
+        watermark = int(self.get("event_watermark"))
+        events = fetch_activity(self.http, self.wallet, watermark)
+        ingest(self.conn, events)
+        if events:
+            self.set("event_watermark", max(watermark, max(int(e["timestamp"]) for e in events)))
+        # Always settle holdings first; settlement does not require a source sale.
+        for asset, row in list(self.positions().items()):
             try:
                 payout = self.resolution(row[1], asset)
             except (httpx.HTTPError, ValueError, RuntimeError) as exc:
-                LOG.warning("Settlement deferred %s: %s", asset, exc)
+                LOG.warning("Settlement lookup deferred %s: %s", asset, exc)
                 continue
             if payout is None:
                 continue
@@ -210,91 +213,74 @@ class Worker:
             except Exception:
                 self.conn.execute("ROLLBACK")
                 raise
-        holdings = self.positions()
-        # A source reduction triggers a proportional paper sale; disappearance closes all.
-        for asset, row in holdings.items():
-            src_size = D(source.get(asset, {}).get("size", 0))
-            previous = D(row[6])
-            held = D(row[3])
-            if src_size < previous and previous > 0:
-                qty = held * (previous - src_size) / previous
-                try:
-                    px = self.price(asset, "SELL")
-                except (httpx.HTTPError, RuntimeError) as exc:
-                    LOG.warning("Sell deferred %s: %s", asset, exc)
-                    continue
-                basis = D(row[4]) * qty / held
-                pnl = qty * px * (1 - D(os.getenv('COPY_FEE_RATE', '0'))) - basis
-                self.conn.execute("BEGIN IMMEDIATE")
-                try:
-                    self.fill(asset, "SELL", qty, px, pnl, "source_reduced")
-                    if qty >= held:
-                        self.conn.execute("DELETE FROM positions WHERE asset=?", (asset,))
-                    else:
-                        self.conn.execute("UPDATE positions SET shares=?,cost_usd=?,last_price=?,source_shares=? WHERE asset=?",
-                                          (str(held - qty), str(D(row[4]) - basis), str(px), str(src_size), asset))
-                    self.conn.execute("COMMIT")
-                except Exception:
-                    self.conn.execute("ROLLBACK")
-                    raise
-        # New source additions are sized against current available paper equity.
-        holdings = self.positions()
-        cash = D(self.get("cash_usd"))
-        equity = cash
-        for asset, row in holdings.items():
-            try:
-                equity += D(row[3]) * self.price(asset, "SELL")
-            except (httpx.HTTPError, RuntimeError):
-                equity += D(row[3]) * D(row[5])  # stale mark flagged in logs
-                LOG.warning("Using stale mark for %s", asset)
-        for asset, item in source.items():
-            new_size = D(item["size"])
-            previous = D(baseline.get(asset, "0"))
-            if new_size <= previous or self.conn.execute("SELECT 1 FROM settled WHERE asset=?", (asset,)).fetchone():
+        # Each journaled source trade is applied at most once, in time order.
+        pending = self.conn.execute(
+            "SELECT event_key,asset,condition_id,outcome,side,source_size FROM copy_events "
+            "WHERE status='PENDING' ORDER BY ts,event_key").fetchall()
+        for event_key, asset, condition, outcome, side, source_size in pending:
+            if self.conn.execute("SELECT 1 FROM settled WHERE asset=?", (asset,)).fetchone():
+                self.conn.execute("UPDATE copy_events SET status='SKIPPED' WHERE event_key=?", (event_key,))
                 continue
+            held = self.positions().get(asset)
             try:
-                px = self.price(asset, "BUY")
+                px = self.price(asset, side)
             except (httpx.HTTPError, RuntimeError) as exc:
-                LOG.warning("Buy deferred %s: %s", asset, exc)
-                continue
-            # Fixed fraction of *current* equity; never borrow or spend more than cash.
-            allocation = min(equity * self.max_fraction, D(self.get("cash_usd")))
-            if allocation < D(os.getenv("COPY_MIN_TRADE_USD", "1")):
-                continue
-            fee = D(os.getenv("COPY_FEE_RATE", "0"))
-            qty = allocation / (px * (1 + fee))
-            old = self.positions().get(asset)
+                LOG.warning("Trade %s deferred: %s", event_key, exc)
+                # Do not process later trades out of order when an earlier one failed.
+                break
             self.conn.execute("BEGIN IMMEDIATE")
             try:
-                self.fill(asset, "BUY", qty, px, D(0), "source_increased")
-                shares = qty + (D(old[3]) if old else 0)
-                cost = allocation + (D(old[4]) if old else 0)
-                self.conn.execute("INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?,?)",
-                                  (asset, item.get("conditionId", ""), item.get("outcome", ""),
-                                   str(shares), str(cost), str(px), str(new_size), utcnow()))
+                if side == "BUY":
+                    cash = D(self.get("cash_usd"))
+                    # Current equity is cash plus conservative last-known holding marks.
+                    equity = cash + sum(D(p[3]) * D(p[5]) for p in self.positions().values())
+                    current_value = D(held[3]) * px if held else D(0)
+                    budget = max(D(0), min(cash, equity * self.max_fraction - current_value))
+                    fee = D(os.getenv("COPY_FEE_RATE", "0"))
+                    if budget >= D(os.getenv("COPY_MIN_TRADE_USD", "1")):
+                        qty = budget / (px * (1 + fee))
+                        self.fill(asset, "BUY", qty, px, D(0), "copied_source_trade")
+                        self.conn.execute("INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?,?)",
+                            (asset, condition or (held[1] if held else ""),
+                             outcome or (held[2] if held else ""),
+                             str(qty + (D(held[3]) if held else 0)),
+                             str(budget + (D(held[4]) if held else 0)),
+                             str(px), str(D(source_size) + (D(held[6]) if held else 0)), utcnow()))
+                elif held:
+                    # Source sells reduce the copied position in the same proportion.
+                    tracked_source = D(held[6])
+                    held_qty = D(held[3])
+                    qty = held_qty * min(D(1), D(source_size) / tracked_source) if tracked_source > 0 else D(0)
+                    if qty > 0:
+                        basis = D(held[4]) * qty / held_qty
+                        fee = D(os.getenv("COPY_FEE_RATE", "0"))
+                        self.fill(asset, "SELL", qty, px, qty * px * (1 - fee) - basis, "copied_source_trade")
+                        remaining = held_qty - qty
+                        if remaining <= 0:
+                            self.conn.execute("DELETE FROM positions WHERE asset=?", (asset,))
+                        else:
+                            self.conn.execute("UPDATE positions SET shares=?,cost_usd=?,last_price=?,source_shares=? WHERE asset=?",
+                                (str(remaining), str(D(held[4]) - basis), str(px),
+                                 str(max(D(0), tracked_source - D(source_size))), asset))
+                self.conn.execute("UPDATE copy_events SET status='DONE' WHERE event_key=?", (event_key,))
                 self.conn.execute("COMMIT")
             except Exception:
                 self.conn.execute("ROLLBACK")
                 raise
-        # Store only fully processed source snapshot; retry failed executions next tick.
-        # For held positions retain their last processed source size when a sale was deferred.
-        current = self.positions()
-        updated = {a: str(p["size"]) for a, p in source.items()}
-        for asset, row in current.items():
-            # The baseline must not advance past failed paper fills.
-            if asset in source and D(row[6]) != D(source[asset]["size"]):
-                updated[asset] = row[6]
-        self.set("baseline", json.dumps(updated))
         cash = D(self.get("cash_usd"))
         marked = cash
-        for asset, row in current.items():
+        unrealized = D(0)
+        for asset, row in self.positions().items():
             try:
-                marked += D(row[3]) * self.price(asset, "SELL")
+                mark = self.price(asset, "SELL")
             except (httpx.HTTPError, RuntimeError):
-                marked += D(row[3]) * D(row[5])
+                mark = D(row[5])
+                LOG.warning("Using stale mark for %s", asset)
+            marked += D(row[3]) * mark
+            unrealized += D(row[3]) * mark - D(row[4])
         self.conn.execute("INSERT INTO observations VALUES (?,?,?,?)",
-                          (utcnow(), str(cash), str(marked), str(marked - cash - sum(D(r[4]) for r in current.values()))))
-        LOG.info("Paper cash USD=%s equity USD=%s realized USD=%s", cash, marked, self.get("realized_usd"))
+                          (utcnow(), str(cash), str(marked), str(unrealized)))
+        LOG.info("Cash=%s equity=%s realized=%s", cash, marked, self.get("realized_usd"))
 
     def run(self, once=False):
         while True:
