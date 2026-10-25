@@ -41,7 +41,8 @@ def test_winning_market_settles_and_compounds(tmp_path, monkeypatch):
     worker.conn.execute("INSERT INTO positions VALUES (?,?,?,?,?,?,?,?)",
                         ("token", "condition", "Yes", "10", "4", "0.4", "10", "now"))
     worker.set("cash_usd", "321")
-    worker.source = lambda: {}
+    monkeypatch.setattr("obsidian_prediction.copy_paper.fetch_activity", lambda *args: [])
+    worker.set("event_watermark", "100")
     worker.resolution = lambda condition, asset: Decimal("1")
     worker.tick()
     assert Decimal(worker.get("cash_usd")) == Decimal("331")
@@ -60,7 +61,8 @@ def test_losing_market_settles_to_zero(tmp_path, monkeypatch):
     worker.conn.execute("INSERT INTO positions VALUES (?,?,?,?,?,?,?,?)",
                         ("token", "condition", "No", "10", "4", "0.4", "10", "now"))
     worker.set("cash_usd", "321")
-    worker.source = lambda: {}
+    monkeypatch.setattr("obsidian_prediction.copy_paper.fetch_activity", lambda *args: [])
+    worker.set("event_watermark", "100")
     worker.resolution = lambda condition, asset: Decimal("0")
     worker.tick()
     assert Decimal(worker.get("cash_usd")) == Decimal("321")
@@ -82,4 +84,25 @@ def test_resolution_requires_unambiguous_market(tmp_path, monkeypatch):
     assert worker.resolution("condition", "yes") == Decimal("1")
     assert worker.resolution("condition", "no") == Decimal("0")
     assert worker.resolution("condition", "unknown") is None
+    worker.conn.close()
+
+
+def test_source_trade_replay_is_idempotent(tmp_path, monkeypatch):
+    from obsidian_prediction.copy_events import ingest
+    monkeypatch.setenv("COPY_AUDUSD", "0.65")
+    worker = Worker("0x" + "f" * 40, str(tmp_path / "events.sqlite"))
+    event = {"type": "TRADE", "timestamp": 1234, "transactionHash": "0xabc",
+             "asset": "token", "conditionId": "condition", "outcome": "Yes",
+             "side": "BUY", "size": 10, "price": 0.5}
+    ingest(worker.conn, [event, event])
+    assert worker.conn.execute("SELECT COUNT(*) FROM copy_events").fetchone()[0] == 1
+    worker.set("event_watermark", "100")
+    monkeypatch.setattr("obsidian_prediction.copy_paper.fetch_activity", lambda *args: [event])
+    worker.resolution = lambda *args: None
+    worker.price = lambda *args: Decimal("0.5")
+    worker.tick()
+    balance = worker.get("cash_usd")
+    worker.tick()
+    assert worker.get("cash_usd") == balance
+    assert worker.conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 1
     worker.conn.close()
