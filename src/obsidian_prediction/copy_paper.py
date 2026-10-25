@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sqlite3
+import re
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -30,7 +31,13 @@ def utcnow():
 class Worker:
     def __init__(self, wallet: str, db: str, initial_aud: Decimal = D(500),
                  max_fraction: Decimal = D("0.10"), poll: int = 30):
-        if not wallet.startswith("0x") or len(wallet) != 42:
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", wallet):
+            raise ValueError("COPY_WALLET must be a valid hex EVM address")
+        if not (D("0") < max_fraction <= D("1")):
+            raise ValueError("COPY_MAX_POSITION_FRACTION must be in (0,1]")
+        if poll < 5:
+            raise ValueError("COPY_POLL_SECONDS must be >= 5")
+        if False:
             raise ValueError("COPY_WALLET must be the 42-character proxy wallet address")
         self.wallet, self.poll, self.max_fraction = wallet.lower(), poll, max_fraction
         Path(db).parent.mkdir(parents=True, exist_ok=True)
@@ -49,6 +56,7 @@ class Worker:
         CREATE TABLE IF NOT EXISTS observations(
           at TEXT, cash_usd TEXT, equity_usd TEXT, unrealized_usd TEXT);
         """)
+        self.conn.execute("CREATE TABLE IF NOT EXISTS settled(asset TEXT PRIMARY KEY, payout TEXT, at TEXT)")
         self.http = httpx.Client(timeout=15, headers={"User-Agent": "ObsidianPrediction-Paper/1"})
         if self.get("cash_usd") is None:
             fx = self.fx()
@@ -132,6 +140,33 @@ class Worker:
             LOG.info("Initialized baseline of %d source holdings; waiting for changes", len(source))
             return
         baseline = json.loads(self.get("baseline"))
+        # Resolve paper positions from public settlement flags, even if source holdings disappear.
+        for asset, row in list(holdings.items()):
+            item = source.get(asset, {})
+            if not item:
+                try:
+                    resolved = self.api(DATA, "/positions", {"user": self.wallet, "limit": 500, "sizeThreshold": 0})
+                    item = next((p for p in resolved if str(p.get("asset")) == asset), {})
+                except httpx.HTTPError:
+                    item = {}
+            if not item.get("redeemable"):
+                continue
+            # Redeemable does not alone prove the outcome: require explicit outcome payout.
+            payout = item.get("payout")
+            if payout is None or D(payout) not in (D(0), D(1)):
+                LOG.warning("Settlement pending verified payout for %s", asset)
+                continue
+            qty, basis = D(row[3]), D(row[4])
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.fill(asset, "SELL", qty, D(payout), qty * D(payout) - basis, "resolved")
+                self.conn.execute("DELETE FROM positions WHERE asset=?", (asset,))
+                self.conn.execute("INSERT OR REPLACE INTO settled VALUES (?,?,?)", (asset, str(payout), utcnow()))
+                self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+        holdings = self.positions()
         # A source reduction triggers a proportional paper sale; disappearance closes all.
         for asset, row in holdings.items():
             src_size = D(source.get(asset, {}).get("size", 0))
@@ -171,7 +206,7 @@ class Worker:
         for asset, item in source.items():
             new_size = D(item["size"])
             previous = D(baseline.get(asset, "0"))
-            if new_size <= previous:
+            if new_size <= previous or self.conn.execute("SELECT 1 FROM settled WHERE asset=?", (asset,)).fetchone():
                 continue
             try:
                 px = self.price(asset, "BUY")
@@ -202,7 +237,8 @@ class Worker:
         current = self.positions()
         updated = {a: str(p["size"]) for a, p in source.items()}
         for asset, row in current.items():
-            if asset in source and D(row[6]) > D(source[asset]["size"]):
+            # The baseline must not advance past failed paper fills.
+            if asset in source and D(row[6]) != D(source[asset]["size"]):
                 updated[asset] = row[6]
         self.set("baseline", json.dumps(updated))
         cash = D(self.get("cash_usd"))
