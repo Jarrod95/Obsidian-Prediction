@@ -37,8 +37,6 @@ class Worker:
             raise ValueError("COPY_MAX_POSITION_FRACTION must be in (0,1]")
         if poll < 5:
             raise ValueError("COPY_POLL_SECONDS must be >= 5")
-        if False:
-            raise ValueError("COPY_WALLET must be the 42-character proxy wallet address")
         self.wallet, self.poll, self.max_fraction = wallet.lower(), poll, max_fraction
         Path(db).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db, timeout=30, isolation_level=None)
