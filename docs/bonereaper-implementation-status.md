@@ -43,3 +43,18 @@ CI is exhausted per operator request. Do not trigger GitHub Actions for tests. T
 ```
 
 Do **not** flip `BONEREAPER_SOURCE_VERIFIED` or start paper operation on unverified wallet attribution. Do not merge or deploy until all mandatory gates are demonstrated.
+
+## Subsequent hardening changes
+
+- Added a fail-closed post-requote budget assertion: no BUY fill is accepted if recomputed cash outlay still exceeds its budget.
+- Malformed source numeric fields now receive a durable `REJECTED_SCHEMA` disposition instead of poisoning the whole processing poll.
+- Added offline regression test cases for malformed-event isolation, ambiguous settlement rejection, once-only settlement across restart and invalid/stale FX.
+- **These new tests have not been executed.** The current tool container cannot resolve github.com to clone the branch, and the connected GitHub app exposes repository read/write but no local shell runner. GitHub Actions must remain unused at the user's request.
+
+### Known critical limitations to resolve before deploying
+
+- The current source event key is a hash of the payload, not a verified canonical fill ID. Changed upstream serialization can lead to duplicate decisions; source attribution and feed completeness are not proven.
+- The settlement predicate uses closed Gamma market and a binary outcome-price vector; this is not sufficient independent proof of official final settlement under all market states.
+- The current Windows stop script uses forceful termination after verifying command-line PID, not graceful shutdown; no watchdog or autostart-on-reboot is provided.
+- Status deliberately leaves open equity unmarked, so daily net drawdown protection and truthful NAV are not yet implemented.
+- Telegram/dashboard shared integration, performance sensitivity report, exports, migration backup, crash injection and exact reproducible local test evidence are not complete.
