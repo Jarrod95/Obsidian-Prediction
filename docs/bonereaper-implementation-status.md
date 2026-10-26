@@ -16,7 +16,7 @@
 - Current legacy source ingestion and copy engine are **not** safe for 5m replication without further work.
 - Market classifier assumes Gamma short-window slugs and end-date schema; fixtures need confirmation against current official Gamma responses before integration.
 - Quote freshness and order-book API schema must be validated at the adapter boundary. These pure functions do not validate quote age.
-- No observed profitability, follower latency study, forward-test, Windows VPS smoke, deployment rehearsal, or full regression output exists for this branch.
+- No observed profitability, follower latency study, forward-test, Windows VPS smoke or deployment rehearsal exists for this branch. The existing regression suite passed in GitHub Actions (47 tests) but does not cover the missing worker implementation.
 - No deployment instructions are valid until the independent runtime and its migration/restart tooling exist.
 
 ## Acceptance gates
@@ -35,7 +35,7 @@
 | G10 Windows operations | NOT DONE |
 | G11 visibility | NOT DONE |
 | G12 deployment | NOT DONE |
-| G13 quality | NOT VERIFIED — no local checkout/test execution |
+| G13 quality | PARTIAL — GitHub Actions Linux Python 3.12: Ruff, 47 pytest, doctor PASS; no Windows smoke or full spec tests |
 | G14 merge-ready PR | NOT DONE |
 
 ## Safe reviewer commands
@@ -46,4 +46,4 @@ python -m pytest -q
 python -m ruff check .
 ```
 
-No new strategy must be enabled in `bots/registry.json` until all release gates pass. This branch should remain draft / explicitly blocked.
+CI evidence: https://github.com/Jarrod95/Obsidian-Prediction/actions/runs/40280043964 (Ruff success, pytest 47 passed, CLI doctor success). This does **not** certify the full specification.\n\nNo new strategy must be enabled in `bots/registry.json` until all release gates pass. This branch should remain draft / explicitly blocked.
