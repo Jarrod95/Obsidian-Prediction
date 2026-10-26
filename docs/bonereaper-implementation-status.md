@@ -1,49 +1,45 @@
-# Bonereaper BTC copy implementation — verification status
+# Bonereaper BTC follower — current engineering status
 
-**Status: NOT READY FOR MERGE OR DEPLOYMENT.** This branch contains only the initial, isolated safety primitives and deterministic unit tests. It does **not** satisfy the complete Bonereaper implementation contract.
+**NOT READY FOR MERGE OR WINDOWS VPS DEPLOYMENT.** This document is intentionally an honest release-gate report rather than a completed signoff.
 
-## Implemented
+## Code currently committed
 
-- Strict BTC 5m/15m slug plus condition/token/outcome/end-time/state validation, with reason-coded exclusions.
-- Decimal-based order-book execution simulation: buy walks asks, sell walks bids; fee, tick and insufficient depth handling.
-- Network-free tests for eligibility, timing, malformed metadata, depth, VWAP, precision and fees.
-- Existing `copy_paper.py`, `@bigggggggg` configuration, wallet and parity bot are unchanged.
+- Standalone `src/obsidian_prediction/bonereaper_worker.py`: separate paper-only database and event journal, v2 keyset activity reader, BTC market filter, execution checks, portfolio cash/cost basis, source proportional sells, unambiguous-price settlement, status/events/positions/fills, pause/resume and SQLite integrity doctor.
+- `bonereaper_primitives.py`: conservative BTC 5m/15m market classification and L2 depth VWAP.
+- `bonereaper.env.example`: wallet candidate, explicit source-verification flag, FX and observe-only default.
+- Windows scripts for detached start/verified PID stop/status/restart. **Not smoke-tested on Windows.** Stop is forceful; crash supervision and reboot autostart are not implemented.
+- Offline tests for pure primitives and initial worker boundaries.
+- `docs/bonereaper-copy-bot.md`: config, runbook, limitations and rollback.
+- Existing bigggggggg worker and parity platform code unchanged.
 
-## Critical blockers / incomplete contract
+## Release gates
 
-- Full Bonereaper wallet attribution has **not** been verified from the official proxy/profile mapping. Do not create a source wallet by guessing or inferring from the handle.
-- No dedicated Bonereaper runtime, ingestion, journal, risk manager, persistent ledger, settlement, reporting, Telegram integration or Windows service/lifecycle management has been wired up.
-- Current legacy source ingestion and copy engine are **not** safe for 5m replication without further work.
-- Market classifier assumes Gamma short-window slugs and end-date schema; fixtures need confirmation against current official Gamma responses before integration.
-- Quote freshness and order-book API schema must be validated at the adapter boundary. These pure functions do not validate quote age.
-- No observed profitability, follower latency study, forward-test, Windows VPS smoke or deployment rehearsal exists for this branch. The existing regression suite passed in GitHub Actions (47 tests) but does not cover the missing worker implementation.
-- No deployment instructions are valid until the independent runtime and its migration/restart tooling exist.
+| Gate | Result | Blocker / status |
+|---|---|---|
+| G01 | PARTIAL | current main inspected; complete before/after baseline and Windows verification missing |
+| G02 | BLOCKED | candidate full wallet from two external profiles; official handle attribution not independently confirmed |
+| G03 | PARTIAL | classifier with static fixtures, no live Gamma schema confirmation |
+| G04 | PARTIAL | v2 cursor and dedup implemented, but no real feed replay / gap audit |
+| G05 | PARTIAL | source-event age, market and price drift; no full strategy/replay matrix |
+| G06 | PARTIAL | bid/ask depth and VWAP; no validated market-specific fees/latency replay |
+| G07 | PARTIAL | cost-basis and settlement; no full crash/reconciliation/backup invariant suite |
+| G08 | PARTIAL | sizing/exposure/concurrency/entry pause; daily drawdown stop not implemented |
+| G09 | PARTIAL | independent DB and unchanged existing workers; concurrency smoke absent |
+| G10 | BLOCKED | Windows launcher present but no smoke, writer lock, graceful stop or service watchdog |
+| G11 | PARTIAL | status / events / fills / positions; no dashboard/Telegram or complete NAV |
+| G12 | BLOCKED | clean Windows VPS deployment not rehearsed |
+| G13 | BLOCKED | baseline earlier PR code passed 47 tests in GitHub Actions, but **new worker and scripts have not been tested** |
+| G14 | BLOCKED | PR #11 remains a draft; not a completed release |
 
-## Acceptance gates
+CI is exhausted per operator request. Do not trigger GitHub Actions for tests. The earlier successful GitHub Actions run (https://github.com/Jarrod95/Obsidian-Prediction/actions/runs/40280043964) predates the new worker and is not evidence that these changes pass.
 
-| Gate | Status |
-|---|---|
-| G01 baseline | PARTIAL — repository tree and existing entrypoints inspected; baseline tests not executed |
-| G02 wallet | BLOCKED — no verified address |
-| G03 BTC filter | PARTIAL — coded with unit fixtures; live schema not yet confirmed |
-| G04 feed | NOT DONE |
-| G05 decisions | NOT DONE |
-| G06 fill realism | PARTIAL — depth primitive only, not integrated |
-| G07 accounting | NOT DONE |
-| G08 risk | NOT DONE |
-| G09 isolation | NOT DONE |
-| G10 Windows operations | NOT DONE |
-| G11 visibility | NOT DONE |
-| G12 deployment | NOT DONE |
-| G13 quality | PARTIAL — GitHub Actions Linux Python 3.12: Ruff, 47 pytest, doctor PASS; no Windows smoke or full spec tests |
-| G14 merge-ready PR | NOT DONE |
-
-## Safe reviewer commands
+## Local required commands
 
 ```powershell
-python -m pytest -q tests/test_bonereaper_primitives.py
-python -m pytest -q
-python -m ruff check .
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m obsidian_prediction.cli doctor
 ```
 
-CI evidence: https://github.com/Jarrod95/Obsidian-Prediction/actions/runs/40280043964 (Ruff success, pytest 47 passed, CLI doctor success). This does **not** certify the full specification.\n\nNo new strategy must be enabled in `bots/registry.json` until all release gates pass. This branch should remain draft / explicitly blocked.
+Do **not** flip `BONEREAPER_SOURCE_VERIFIED` or start paper operation on unverified wallet attribution. Do not merge or deploy until all mandatory gates are demonstrated.
