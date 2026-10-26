@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Mapping
+from collections.abc import Mapping
 
 BTC_SLUG = re.compile(r"^btc-updown-(5m|15m)-(\d{10})$")
 TIMEFRAMES = {"5m": 300, "15m": 900}
