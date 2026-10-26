@@ -1,6 +1,5 @@
 """Durable source-trade journal for paper copying. No live trading credentials."""
 import hashlib
-import json
 from decimal import Decimal
 
 def key(row):
