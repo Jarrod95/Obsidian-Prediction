@@ -78,7 +78,7 @@ class PaperBot:
         self.conn = sqlite3.connect(str(self.path), isolation_level=None, timeout=15)
         self.conn.execute("PRAGMA busy_timeout=15000")
         self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA foreign_keys=ON")
+        self.conn.execute("PRAGMA foreign_keys=ON")\n        # SQLite transaction ownership is reinforced by BEGIN IMMEDIATE for each fill.
         self.conn.executescript("""
         CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events (
@@ -205,11 +205,15 @@ class PaperBot:
         side = str(event.get("side", "")).upper()
         token = str(event.get("asset") or event.get("token_id") or "")
         condition = str(event.get("conditionId") or event.get("condition_id") or "")
-        ts = int(event.get("timestamp", 0))
-        size = decimal(event.get("size", 0))
-        source_price = decimal(event.get("price", 0))
+        try:
+            ts = int(event.get("timestamp", 0))
+            size = decimal(event.get("size", 0))
+            source_price = decimal(event.get("price", 0))
+        except (TypeError, ValueError, OverflowError):
+            # Malformed events are durably rejected, not allowed to poison
+            # unrelated markets' FIFO processing indefinitely.
+            ts, size, source_price = 0, Decimal(0), Decimal(0)
         reason = "REJECTED_SCHEMA"
-        decision = None
         fill = None
         previous = self.holdings().get(token)
         current = int(time.time())
@@ -237,20 +241,26 @@ class PaperBot:
                             if len({p[1] for p in holdings.values()}) >= 3 and not previous:
                                 reason = "REJECTED_MAX_MARKETS"
                             else:
-                                per_budget = self.max_fraction * decimal(self.get("initial_cash"))
-                                aggregate = self.max_deployed * decimal(self.get("initial_cash"))
+                                # Risk exposure is entry cost, including capitalized fees.
+                                # Use estimated equity conservatively until bid marks are available.
+                                initial = decimal(self.get("initial_cash"))
+                                per_budget = self.max_fraction * initial
+                                aggregate = self.max_deployed * initial
                                 budget = min(cash, per_budget - (decimal(previous[4]) if previous else 0),
                                              aggregate - deployed)
                                 if budget < 1:
                                     reason = "REJECTED_RISK"
                                 else:
+                                    # Start with an upper-bound share quantity, then ensure
+                                    # actual *executed* cost does not exceed the budget.
                                     qty = budget / (Decimal(1) + self.fee)
-                                    # Conservative upper bound at price=1; actual request below capped by budget.
                                     depth = self.book(token, side, qty)
                                     if depth.total_cash > budget:
                                         qty = qty * budget / depth.total_cash
                                         depth = self.book(token, side, qty)
-                                    if depth.average_price - source_price > self.drift:
+                                    if depth.total_cash > budget:
+                                        reason = "REJECTED_RISK"
+                                    elif depth.average_price - source_price > self.drift:
                                         reason = "REJECTED_PRICE_DRIFT"
                                     else:
                                         fill = (qty, depth)
@@ -351,9 +361,7 @@ class PaperBot:
         events = self.activity(since)
         for event in sorted(events, key=lambda e: (int(e.get("timestamp", 0)), event_key(e))):
             self.handle(event)
-        # Advance only after every event decision committed.
-        if events:
-            self.set("watermark", max(since, max(int(e["timestamp"]) for e in events)))
+        # Advance only after each event decision is durably committed. A crash\n        # before this checkpoint is safe because the event key is unique.\n        if events:\n            self.set("watermark", max(since, max(int(e["timestamp"]) for e in events)))
         self.set("last_poll_success", now_utc())
         self.set("last_error", "")
 
