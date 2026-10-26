@@ -78,7 +78,8 @@ class PaperBot:
         self.conn = sqlite3.connect(str(self.path), isolation_level=None, timeout=15)
         self.conn.execute("PRAGMA busy_timeout=15000")
         self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA foreign_keys=ON")\n        # SQLite transaction ownership is reinforced by BEGIN IMMEDIATE for each fill.
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        # SQLite transaction ownership is reinforced by BEGIN IMMEDIATE for each fill.
         self.conn.executescript("""
         CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events (
@@ -361,7 +362,10 @@ class PaperBot:
         events = self.activity(since)
         for event in sorted(events, key=lambda e: (int(e.get("timestamp", 0)), event_key(e))):
             self.handle(event)
-        # Advance only after each event decision is durably committed. A crash\n        # before this checkpoint is safe because the event key is unique.\n        if events:\n            self.set("watermark", max(since, max(int(e["timestamp"]) for e in events)))
+        # Advance only after each event decision is durably committed. A crash
+        # before this checkpoint is safe because the event key is unique.
+        if events:
+            self.set("watermark", max(since, max(int(e["timestamp"]) for e in events)))
         self.set("last_poll_success", now_utc())
         self.set("last_error", "")
 
