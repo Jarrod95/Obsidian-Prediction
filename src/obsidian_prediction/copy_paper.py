@@ -291,7 +291,7 @@ class Worker:
                            idle_reason="source scan in progress")
             try:
                 self.tick()
-                mark_heartbeat(last_scan_completed=utcnow(),
+                mark_heartbeat(last_error=None, last_scan_completed=utcnow(),
                                last_successful_data_observation=utcnow(),
                                idle_reason="paper source poll completed")
             except Exception as exc:
