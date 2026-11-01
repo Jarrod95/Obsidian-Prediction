@@ -154,10 +154,13 @@ def spawn(entry, root: Path = RUNTIME) -> dict:
         stderr = root / f"{entry.id}.{run_id}.stderr.log"
         argv = [sys.executable, "-u", "-m", entry.module, *entry.args]
         root.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ, OBSIDIAN_FLEET_RUN_ID=run_id,
+                   OBSIDIAN_FLEET_WORKER_ID=entry.id,
+                   OBSIDIAN_FLEET_RUNTIME=str(root.resolve()))
         with stdout.open("ab") as out, stderr.open("ab") as err:
             flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
             child = subprocess.Popen(argv, cwd=ROOT, stdout=out, stderr=err,
-                                     creationflags=flags, stdin=subprocess.DEVNULL)
+                                     creationflags=flags, stdin=subprocess.DEVNULL, env=env)
         proc = psutil.Process(child.pid)
         sha = os.environ.get("OBSIDIAN_RELEASE_SHA", "UNKNOWN")
         data = {"pid": child.pid, "created": proc.create_time(),
