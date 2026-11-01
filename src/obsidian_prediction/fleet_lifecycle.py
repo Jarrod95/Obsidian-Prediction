@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -217,10 +218,21 @@ def stop(entry, root: Path = RUNTIME, timeout: float = 5) -> dict:
                     "reason": "no verified owned process"}
         children = proc.children(recursive=True)
         targets = [*children, proc]
-        for p in targets:
+        # Give the owned Python process a chance to run its cleanup handlers.
+        # Windows worker processes are created in independent process groups.
+        try:
+            if os.name == "nt":
+                os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+            else:
+                proc.send_signal(signal.SIGTERM)
+        except (OSError, psutil.Error, AttributeError):
+            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                proc.terminate()
+        _, alive = psutil.wait_procs(targets, timeout=timeout)
+        for p in alive:
             with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
                 p.terminate()
-        _, alive = psutil.wait_procs(targets, timeout=timeout)
+        _, alive = psutil.wait_procs(alive, timeout=min(2, timeout))
         for p in alive:
             with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
                 p.kill()
