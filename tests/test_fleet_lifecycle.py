@@ -165,3 +165,35 @@ def test_recorded_actual_python_image_matches_windows_venv_redirector():
         verified, reason = identity_check(entry, record)
         assert verified is None
         assert reason == "recorded executable image mismatch"
+
+
+def test_windows_redirector_image_transition_keeps_verified_ownership():
+    """A freshly launched venv shim can resolve to the base Python image."""
+    import sys
+    import psutil
+    import pytest
+    from obsidian_prediction.fleet_lifecycle import identity_check
+    if os.name != "nt":
+        pytest.skip("Windows venv executable redirector behavior")
+    entry = worker()
+    proc = Mock()
+    proc.create_time.return_value = 123.0
+    proc.cmdline.return_value = [
+        sys.executable, "-u", "-m", "obsidian_prediction.fleet_bootstrap",
+        entry.module, *entry.args,
+    ]
+    proc.exe.return_value = r"C:\Python312\python.exe"
+    proc.is_running.return_value = True
+    proc.status.return_value = psutil.STATUS_RUNNING
+    record = {
+        "pid": 4321, "created": 123.0, "interpreter": sys.executable,
+        "executable_image": sys.executable,
+        "args_sha256": fingerprint(entry.module, entry.args),
+    }
+    with patch("obsidian_prediction.fleet_lifecycle.psutil.Process", return_value=proc):
+        verified, reason = identity_check(entry, record)
+        assert verified is proc, reason
+        proc.cmdline.return_value[-1] = "wrong"
+        verified, reason = identity_check(entry, record)
+        assert verified is None
+        assert reason == "process module or arguments mismatch"
