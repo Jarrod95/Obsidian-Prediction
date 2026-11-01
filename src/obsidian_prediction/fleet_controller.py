@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import time
 from pathlib import Path
 
@@ -22,8 +21,9 @@ def decision(history: dict, timestamp: float, running: bool, state: str) -> tupl
     quarantine = bool(history.get("quarantined")) and len(events) >= MAX_RESTARTS
     if not running:
         return False, {"events": events, "quarantined": quarantine, "reason": "operator stopped"}
-    if state in ("HEALTHY", "IDLE", "STARTING", "ALIVE_NOT_READY", "DEGRADED"):
-        return False, {"events": events, "quarantined": quarantine, "reason": "owned process alive"}
+    if state in ("HEALTHY", "IDLE", "STARTING", "ALIVE_NOT_READY", "DEGRADED", "BLOCKED_CONFIG"):
+        return False, {"events": events, "quarantined": quarantine,
+                       "reason": "blocked configuration" if state == "BLOCKED_CONFIG" else "owned process alive"}
     if quarantine or len(events) >= MAX_RESTARTS:
         return False, {"events": events, "quarantined": True, "reason": "CRASH_LOOP"}
     base_delay = min(300, 2 ** len(events))
