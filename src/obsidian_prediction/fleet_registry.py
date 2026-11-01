@@ -26,10 +26,12 @@ class Entry:
     args: tuple[str, ...]
     mode: str
     kind: str = "bot"
+    requires_env: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {"id": self.id, "enabled": self.enabled, "module": self.module,
-                "args": list(self.args), "mode": self.mode, "kind": self.kind}
+                "args": list(self.args), "mode": self.mode, "kind": self.kind,
+                "requires_env": list(self.requires_env)}
 
 
 def validate(items: object) -> list[Entry]:
@@ -80,7 +82,20 @@ def validate(items: object) -> list[Entry]:
         if kind not in ("bot", "service"):
             errors.append(f"{label}: kind must be bot or service")
             continue
-        entries.append(Entry(name, item["enabled"], module, tuple(args), mode, kind))
+        required = item.get("requires_env", [])
+        if not isinstance(required, list) or not all(
+            isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*", value)
+            for value in required
+        ):
+            errors.append(f"{label}: requires_env must contain uppercase environment keys")
+            continue
+        if kind == "service" and module == "obsidian_prediction.prediction_telegram":
+            expected = {"TELEGRAM_BOT_TOKEN", "TELEGRAM_USER_ID", "TELEGRAM_CHAT_ID"}
+            if not expected.issubset(required):
+                errors.append(f"{label}: Telegram requires token and user/chat allowlists")
+                continue
+        entries.append(Entry(name, item["enabled"], module, tuple(args), mode, kind,
+                             tuple(required)))
     if errors:
         raise RegistryError("; ".join(errors))
     return entries
