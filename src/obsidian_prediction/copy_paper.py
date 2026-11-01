@@ -187,6 +187,7 @@ class Worker:
         watermark = int(self.get("event_watermark"))
         events = fetch_activity(self.http, self.wallet, watermark)
         ingest(self.conn, events)
+        mark_heartbeat(discovered=len(events), evaluated=len(events))
         if events:
             self.set("event_watermark", max(watermark, max(int(e["timestamp"]) for e in events)))
         # Always settle holdings first; settlement does not require a source sale.
