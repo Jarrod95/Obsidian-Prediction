@@ -265,8 +265,15 @@ def status(entry, root: Path = RUNTIME) -> dict:
         if missing:
             return {"id": entry.id, "state": "BLOCKED_CONFIG",
                     "reason": "missing environment keys: " + ", ".join(missing)}
-        return {"id": entry.id, "state": "UNKNOWN" if record else "STOPPED",
-                "reason": "ownership record unverified" if record else "no owned process"}
+        previous = read(root / (entry.id + ".exit.json")) or {}
+        exit_code = (previous.get("exit_code")
+                     if previous.get("run_id") == (record or {}).get("run_id") else None)
+        result = {"id": entry.id, "state": "UNKNOWN" if record else "STOPPED",
+                  "reason": "ownership record unverified" if record else "no owned process"}
+        if exit_code is not None:
+            result["last_exit_code"] = exit_code
+            result["last_exit_cause"] = previous.get("cause")
+        return result
     hb = read(root / (entry.id + ".heartbeat.json"))
     if not hb or hb.get("run_id") != record.get("run_id"):
         state, reason = "ALIVE_NOT_READY", "no matching scan heartbeat"
