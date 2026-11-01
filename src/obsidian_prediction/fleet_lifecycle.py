@@ -139,20 +139,28 @@ def set_desired(entry, root: Path, running: bool) -> None:
 
 
 def unmanaged(entry, owned_pid: int | None = None) -> list[int]:
-    """Find exact worker argv matches; never terminate unmanaged processes."""
+    """Find unmanaged exact-module workers, including manual python -m variants.
+
+    The result is diagnostic only. Never signal an external process.
+    """
     matches = []
-    for proc in psutil.process_iter(["pid", "cmdline"]):
+    for proc in psutil.process_iter(["pid", "cmdline", "name"]):
         try:
             argv = proc.info["cmdline"] or []
-            direct = len(argv) >= 4 and argv[1:4] == ["-u", "-m", entry.module]
-            wrapped = (len(argv) >= 5 and
-                       argv[1:5] == ["-u", "-m", "obsidian_prediction.fleet_bootstrap", entry.module])
-            if proc.pid != owned_pid and (
-                (direct and (entry.kind == "service" or argv[4:] == list(entry.args))) or
-                (wrapped and (entry.kind == "service" or argv[5:] == list(entry.args)))
+            if proc.pid == owned_pid or "-m" not in argv:
+                continue
+            if not (proc.info["name"] or "").lower().startswith(("python", "py.exe")):
+                continue
+            index = argv.index("-m")
+            module = argv[index + 1] if len(argv) > index + 1 else ""
+            values = argv[index + 2:]
+            if module == "obsidian_prediction.fleet_bootstrap" and values:
+                module, values = values[0], values[1:]
+            if module == entry.module and (
+                entry.kind == "service" or values == list(entry.args)
             ):
                 matches.append(proc.pid)
-        except (psutil.Error, OSError):
+        except (psutil.Error, OSError, ValueError):
             continue
     return matches
 
