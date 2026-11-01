@@ -13,6 +13,7 @@ import sqlite3
 import re
 import time
 from .copy_events import setup as setup_events, fetch_activity, ingest
+from .fleet_heartbeat import mark as mark_heartbeat
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -29,8 +30,6 @@ GAMMA = "https://gamma-api.polymarket.com"
 def utcnow():
     return datetime.now(timezone.utc).isoformat()
 
-
-from .fleet_heartbeat import mark as mark_heartbeat
 
 class Worker:
     def __init__(self, wallet: str, db: str, initial_aud: Decimal = D(500),
