@@ -216,7 +216,14 @@ def spawn(entry, root: Path = RUNTIME, *, respect_desired: bool = False) -> dict
             child = subprocess.Popen(argv, cwd=ROOT, stdout=out, stderr=err,
                                      creationflags=flags, stdin=subprocess.DEVNULL, env=env)
         proc = psutil.Process(child.pid)
-        sha = os.environ.get("OBSIDIAN_RELEASE_SHA", "UNKNOWN")
+        sha = os.environ.get("OBSIDIAN_RELEASE_SHA")
+        if not sha:
+            try:
+                sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                                     text=True, capture_output=True, timeout=3,
+                                     check=True).stdout.strip()
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                sha = "UNKNOWN"
         data = {"schema_version": 1, "pid": child.pid, "created": proc.create_time(),
                 "created_utc": datetime.fromtimestamp(proc.create_time(), timezone.utc).isoformat(),
                 "interpreter": os.path.realpath(sys.executable), "module": entry.module,
