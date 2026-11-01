@@ -20,6 +20,7 @@ from pathlib import Path
 import httpx
 
 from .bonereaper_primitives import classify_btc_market, decimal, simulate_depth
+from .fleet_heartbeat import mark as mark_heartbeat
 
 BOT_ID = "polymarket_bonereaper_btc_copy"
 DATA = "https://data-api.polymarket.com"
@@ -38,8 +39,6 @@ def event_key(row: dict) -> str:
     raw = json.dumps(row, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode()).hexdigest()
 
-
-from .fleet_heartbeat import mark as mark_heartbeat
 
 class PaperBot:
     def __init__(self, db: str, wallet: str, audusd: str, *,
