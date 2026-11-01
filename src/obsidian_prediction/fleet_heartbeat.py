@@ -21,6 +21,7 @@ def mark(**fields) -> None:
     state = read(path) or {}
     if state.get("run_id") != run_id:
         state = {"run_id": run_id, "worker_id": worker}
+    state["schema_version"] = 1
     state.update(fields)
     state["updated"] = datetime.now(timezone.utc).isoformat()
     try:
