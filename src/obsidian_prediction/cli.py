@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import ROOT, Settings
 from .fleet_registry import RegistryError, load as load_fleet, plan as fleet_plan
+from .fleet_lifecycle import status as process_status, RUNTIME, read as read_supervisor
 from .exchanges import PublicPolymarket
 
 
@@ -58,15 +59,28 @@ def main() -> None:
             if args.command == "doctor":
                 import importlib.util
                 import sys
+                import os
                 modules = {e.id: bool(importlib.util.find_spec(e.module))
                            for e in entries}
                 problems = [f"Missing module: {name}" for name, ok in modules.items()
                             if not ok]
+                runtime = ROOT / "runtime"
+                if runtime.exists() and not os.access(runtime, os.W_OK):
+                    problems.append("runtime directory is not writable")
+                ownership = {}
+                for entry in entries:
+                    record_path = RUNTIME / (entry.id + ".json")
+                    if record_path.exists() and read_supervisor(record_path) is None:
+                        problems.append(f"Corrupt ownership record: {record_path}")
+                    ownership[entry.id] = process_status(entry, RUNTIME)
+                controller = read_supervisor(RUNTIME / "controller.json")
                 snapshot = {"config_ok": not problems, "registry_valid": True,
                             "python": sys.executable, "version": sys.version,
                             "data_dir": str(settings.data_dir),
                             "runtime_exists": (ROOT / "runtime").is_dir(),
-                            "modules": modules, "problems": problems,
+                            "modules": modules, "ownership": ownership,
+                            "controller": controller or {"state": "UNKNOWN"},
+                            "problems": problems,
                             "live_trading": False, "fleet": snapshot}
             else:
                 snapshot["observation"] = "UNVERIFIED: offline registry plan, not process readiness"
