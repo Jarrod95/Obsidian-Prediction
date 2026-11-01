@@ -85,3 +85,35 @@ def test_restart_budget_survives_serialization():
     restart, updated = decision(persisted, 550, True, "STOPPED")
     assert restart is False
     assert updated["quarantined"] is True
+
+def _contender(runtime):
+    from pathlib import Path
+    from obsidian_prediction.fleet_lifecycle import spawn
+    return spawn(fake(), Path(runtime))
+
+
+@pytest.mark.timeout(40)
+def test_concurrent_start_contenders_share_owned_pid(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda _: _contender(tmp_path), range(4)))
+        assert len({r["pid"] for r in results}) == 1
+    finally:
+        assert stop(fake(), tmp_path)["state"] == "STOPPED"
+
+
+def test_telegram_not_configured_is_blocked_independently(tmp_path, monkeypatch):
+    from obsidian_prediction.fleet_lifecycle import missing_config
+    entry = validate([{
+        "id": "prediction_telegram", "enabled": True, "kind": "service",
+        "module": "obsidian_prediction.prediction_telegram",
+        "args": ["--mode", "observe"],
+        "requires_env": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_USER_ID", "TELEGRAM_CHAT_ID"]
+    }])[0]
+    for key in entry.requires_env:
+        monkeypatch.delenv(key, raising=False)
+    # Avoid loading any developer's local .env in this credential-free test.
+    monkeypatch.setattr("obsidian_prediction.fleet_lifecycle.load_dotenv", lambda *a, **k: None)
+    assert set(missing_config(entry)) == set(entry.requires_env)
+    assert missing_config(fake()) == []
