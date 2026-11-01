@@ -168,6 +168,57 @@ def identity(entry, record: dict | None):
     return identity_check(entry, record)[0]
 
 
+def reconcile_bootstrap(entry, record: dict | None, root: Path):
+    """Recover a worker spawned by a Windows venv redirector.
+
+    The launcher may exit after creating the actual interpreter, invalidating
+    the Popen PID. Only adopt a child with this launch's random run ID, the
+    exact worker ID/runtime and the complete expected bootstrap argv.
+    Never discover ownership merely from the module name or a reused PID.
+    """
+    if os.name != "nt" or not record or not record.get("run_id"):
+        return None
+    expected_args = [
+        "-u", "-m", "obsidian_prediction.fleet_bootstrap",
+        entry.module, *entry.args,
+    ]
+    expected_runtime = os.path.normcase(os.path.realpath(root))
+    for candidate in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            cmd = candidate.info["cmdline"] or []
+            if cmd[1:] != expected_args:
+                continue
+            environment = candidate.environ()
+            if (environment.get("OBSIDIAN_FLEET_RUN_ID") != record["run_id"]
+                    or environment.get("OBSIDIAN_FLEET_WORKER_ID") != entry.id
+                    or os.path.normcase(os.path.realpath(
+                        environment.get("OBSIDIAN_FLEET_RUNTIME", "")
+                    )) != expected_runtime):
+                continue
+            if not candidate.is_running() or candidate.status() == psutil.STATUS_ZOMBIE:
+                continue
+            if candidate.create_time() < float(record["created"]) - 1:
+                continue
+            image = os.path.basename(candidate.exe()).lower()
+            if image not in ("python.exe", "pythonw.exe"):
+                continue
+            restored = dict(record)
+            restored["pid"] = candidate.pid
+            restored["created"] = candidate.create_time()
+            restored["created_utc"] = datetime.fromtimestamp(
+                candidate.create_time(), timezone.utc
+            ).isoformat()
+            restored["executable_image"] = candidate.exe()
+            # The run ID and environment bind this interpreter to our launch.
+            # Persist its actual command launcher for subsequent identity checks.
+            restored["interpreter"] = os.path.realpath(cmd[0])
+            atomic(record_path(entry, root), restored)
+            return candidate
+        except (psutil.Error, OSError, ValueError, TypeError, KeyError):
+            continue
+    return None
+
+
 def record_path(entry, root: Path) -> Path:
     return root / (entry.id + ".json")
 
@@ -236,6 +287,12 @@ def spawn(entry, root: Path = RUNTIME, *, respect_desired: bool = False) -> dict
                     "reason": "missing environment keys: " + ", ".join(missing)}
         current = read(record_path(entry, root))
         proc, ownership_reason = identity_check(entry, current)
+        if proc is None and current:
+            recovered = reconcile_bootstrap(entry, current, root)
+            if recovered is not None:
+                proc, ownership_reason = identity_check(
+                    entry, read(record_path(entry, root))
+                )
         external = unmanaged(entry, proc.pid if proc else None)
         if external:
             return {"id": entry.id, "state": "BLOCKED_CONFIG",
@@ -291,6 +348,8 @@ def stop(entry, root: Path = RUNTIME, timeout: float = 5) -> dict:
         record = read(record_path(entry, root))
         proc = identity(entry, record)
         if proc is None:
+            proc = reconcile_bootstrap(entry, record, root)
+        if proc is None:
             # An invalid record is preserved for diagnosis; do not signal unknown PID.
             return {"id": entry.id, "state": "STOPPED" if not record else "UNKNOWN",
                     "reason": "no verified owned process"}
@@ -328,6 +387,10 @@ def status(entry, root: Path = RUNTIME) -> dict:
         return {"id": entry.id, "state": "DISABLED", "reason": "registry disabled"}
     record = read(record_path(entry, root))
     proc = identity(entry, record)
+    if proc is None:
+        proc = reconcile_bootstrap(entry, record, root)
+        if proc is not None:
+            record = read(record_path(entry, root))
     if proc is None:
         external = unmanaged(entry)
         if external:
