@@ -10,7 +10,6 @@ import contextlib
 import hashlib
 import json
 import os
-import random
 import subprocess
 import sys
 import time
@@ -19,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import psutil
+from dotenv import load_dotenv
 
 from .config import ROOT
 from .fleet_registry import RegistryError, load, plan
@@ -75,7 +75,9 @@ def lock(name: str, root: Path = RUNTIME, timeout: float = 12):
                 try:
                     p = psutil.Process(int(owner["pid"]))
                     stale = abs(p.create_time() - float(owner["created"])) > 1
-                except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError, TypeError, ValueError):
+                except psutil.NoSuchProcess:
+                    stale = True
+                except (psutil.AccessDenied, KeyError, TypeError, ValueError):
                     stale = False  # never steal a lock when ownership cannot be checked
                 if stale:
                     (path / "owner.json").unlink(missing_ok=True)
@@ -135,12 +137,41 @@ def set_desired(entry, root: Path, running: bool) -> None:
     atomic(desired_path(entry, root), {"running": running, "updated": now()})
 
 
+def unmanaged(entry, owned_pid: int | None = None) -> list[int]:
+    """Find exact worker argv matches; never terminate unmanaged processes."""
+    matches = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            argv = proc.info["cmdline"] or []
+            if (proc.pid != owned_pid and len(argv) >= 4
+                    and argv[1:4] == ["-u", "-m", entry.module]
+                    and argv[4:] == list(entry.args)):
+                matches.append(proc.pid)
+        except (psutil.Error, OSError):
+            continue
+    return matches
+
+
+def missing_config(entry) -> list[str]:
+    load_dotenv(ROOT / ".env", override=False)
+    return [key for key in entry.requires_env if not os.getenv(key)]
+
+
 def spawn(entry, root: Path = RUNTIME) -> dict:
     with lock(entry.id, root):
         if not entry.enabled:
             return {"id": entry.id, "state": "DISABLED", "reason": "registry disabled"}
+        missing = missing_config(entry)
+        if missing:
+            return {"id": entry.id, "state": "BLOCKED_CONFIG",
+                    "reason": "missing environment keys: " + ", ".join(missing)}
         current = read(record_path(entry, root))
         proc = identity(entry, current)
+        external = unmanaged(entry, proc.pid if proc else None)
+        if external:
+            return {"id": entry.id, "state": "BLOCKED_CONFIG",
+                    "reason": "exact unmanaged worker already running",
+                    "unmanaged_pids": external}
         if proc:
             set_desired(entry, root, True)
             return {"id": entry.id, "state": "ALIVE_NOT_READY", "pid": proc.pid,
@@ -208,6 +239,15 @@ def status(entry, root: Path = RUNTIME) -> dict:
     record = read(record_path(entry, root))
     proc = identity(entry, record)
     if proc is None:
+        external = unmanaged(entry)
+        if external:
+            return {"id": entry.id, "state": "UNKNOWN",
+                    "reason": "unmanaged process; do not terminate",
+                    "unmanaged_pids": external}
+        missing = missing_config(entry)
+        if missing:
+            return {"id": entry.id, "state": "BLOCKED_CONFIG",
+                    "reason": "missing environment keys: " + ", ".join(missing)}
         return {"id": entry.id, "state": "UNKNOWN" if record else "STOPPED",
                 "reason": "ownership record unverified" if record else "no owned process"}
     hb = read(root / (entry.id + ".heartbeat.json"))
@@ -275,8 +315,12 @@ def main(argv=None):
                     elif args.action == "stop":
                         r = stop(entry, args.runtime)
                     elif args.action == "restart":
-                        stop(entry, args.runtime)
-                        r = spawn(entry, args.runtime)
+                        stopped = stop(entry, args.runtime)
+                        if stopped["state"] != "STOPPED":
+                            r = {"id": entry.id, "state": "UNKNOWN",
+                                 "reason": "restart refused: owned stop unverified"}
+                        else:
+                            r = spawn(entry, args.runtime)
                     else:
                         r = status(entry, args.runtime)
                 except (OSError, psutil.Error, TimeoutError, ValueError) as exc:
