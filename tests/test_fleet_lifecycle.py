@@ -1,11 +1,8 @@
 """Offline lifecycle safety tests. No Polymarket connections or secrets."""
 import json
 import os
-import time
-from pathlib import Path
 from unittest.mock import Mock, patch
 
-import pytest
 
 from obsidian_prediction.fleet_registry import validate
 from obsidian_prediction.fleet_controller import decision
