@@ -1,5 +1,6 @@
 """Real local subprocess integration, no external network/credentials."""
 import json
+import uuid
 import os
 import sys
 import time
@@ -12,11 +13,14 @@ from obsidian_prediction.fleet_lifecycle import identity, spawn, status, stop, s
 from obsidian_prediction.fleet_controller import decision
 
 
+_TEST_RUN_NONCE = uuid.uuid4().hex
+
+
 def fake(*extra):
     return validate([{
         "id": "fake_worker", "enabled": True,
         "module": "obsidian_prediction._fleet_test_worker",
-        "args": ["run", "--mode", "paper", *extra],
+        "args": ["run", "--mode", "paper", "--test-nonce", _TEST_RUN_NONCE, *extra],
     }])[0]
 
 
@@ -141,3 +145,31 @@ def test_unmanaged_direct_worker_is_not_duplicated_or_killed(tmp_path):
     finally:
         external.terminate()
         external.wait(timeout=5)
+
+@pytest.mark.timeout(30)
+def test_old_test_run_cannot_block_new_fake_worker(tmp_path):
+    """Unmanaged duplicate detection must compare exact arguments, not just module."""
+    import subprocess
+    from obsidian_prediction.fleet_lifecycle import unmanaged
+    prior = validate([{
+        "id": "fake_worker", "enabled": True,
+        "module": "obsidian_prediction._fleet_test_worker",
+        "args": ["run", "--mode", "paper", "--test-nonce", "previous_run"],
+    }])[0]
+    old = subprocess.Popen(
+        [sys.executable, "-u", "-m", prior.module, *prior.args],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    fresh = fake()
+    try:
+        deadline = time.monotonic() + 5
+        while old.pid not in unmanaged(prior) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert old.pid in unmanaged(prior)
+        assert old.pid not in unmanaged(fresh)
+        result = spawn(fresh, tmp_path)
+        assert result["state"] == "STARTING", result
+    finally:
+        stop(fresh, tmp_path)
+        old.terminate()
+        old.wait(timeout=5)
