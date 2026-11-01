@@ -129,3 +129,15 @@ Set credentials only in ignored local `.env` and verify Bonereaper source identi
 .\.venv\Scripts\python.exe -m pytest -q
 powershell -NoProfile -Command '$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\scripts\platform.ps1),[ref]$t,[ref]$e)|Out-Null; if($e.Count){$e|Out-String|Write-Error;exit 1}'
 ```
+
+## Existing Bonereaper correctness defect repaired
+
+The merged Bonereaper worker contained literal backslash-n characters inside a
+comment at the source watermark checkpoint. This accidentally commented out
+the `if events:` branch. Once events were observed, the watermark would not
+advance, leading to redundant event replay (although the event journal
+deduplicates by key). The new change restores the intended checkpoint after
+successful event processing, with an offline regression test for normal
+advancement and for no advancement on a failed event handler. This does not
+change source event selection, pricing, sizing, simulated fills or live
+execution capability. The regression tests still require execution before merge.
