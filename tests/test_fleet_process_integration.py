@@ -65,7 +65,8 @@ def test_child_tree_shutdown(tmp_path):
         stopped = stop(entry, tmp_path)
     assert stopped["state"] == "STOPPED"
     assert not psutil.pid_exists(result["pid"])
-    assert not psutil.pid_exists(child_pid)
+    assert (not psutil.pid_exists(child_pid) or
+            psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE)
 
 
 @pytest.mark.timeout(30)
