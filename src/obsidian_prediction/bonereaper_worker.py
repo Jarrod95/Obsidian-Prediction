@@ -374,7 +374,7 @@ class PaperBot:
                            idle_reason="scan in progress")
             try:
                 self.tick()
-                mark_heartbeat(last_scan_completed=now_utc(),
+                mark_heartbeat(last_error=None, last_scan_completed=now_utc(),
                                last_successful_data_observation=now_utc(),
                                idle_reason="paper source poll completed")
             except (httpx.HTTPError, RuntimeError, ValueError, sqlite3.Error) as exc:
