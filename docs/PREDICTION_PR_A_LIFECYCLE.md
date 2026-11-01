@@ -7,9 +7,10 @@ wallet signing, order placement or live trading. Existing SQLite paper ledgers
 remain under `runtime/` and are not migrated or deleted.
 
 The canonical inventory is `bots/registry.json`. Only entries in this file
-can be launched. Currently `main` contains a parity entry; copy-workers from
-other branches **must be registered only after verifying their real entrypoints
-and arguments**. Do not invent registrations.
+can be launched. The registry now includes the existing parity runner, existing bigggggggg copy
+worker, merged Bonereaper copy worker, and an independently managed optional
+Telegram service. Copy worker modules use their actual CLI contracts; no
+unsupported `--mode` argument is passed to them. All are paper/observe-only.
 
 ## Install — Windows PowerShell 5.1, Python 3.12
 
@@ -92,16 +93,39 @@ checks, not claims of verification.
 6. **Preserve all files in `runtime/`**, especially `*.sqlite3`, WAL and SHM
    files; do not reset the database or delete strategy research data.
 
-## Known gaps requiring PR A follow-up before claiming full acceptance
+## Verification limitations and remaining acceptance work
 
 - No Windows 5.1 syntax/mock process test has been run in the present environment.
 - Full Windows shutdown must verify graceful behavior and orphan child handling.
-- Unmanaged/external duplicate process discovery is not implemented.
-- Telegram is not yet managed as an optional independent registry service.
-- Copy workers must be reconciled against the actual merged branch and instrumented.
+- Exact Python `-m` unmanaged instance discovery is implemented; verify it on Windows against alternate launch mechanisms.
+- Telegram is registered as an independently owned optional service. Verify it against existing unmanaged pollers and with intentionally absent credentials.
+- Both merged copy workers are registered and publish scan heartbeats; verify their startup/health on the target VPS with safe paper/observe configuration.
 - Controller boot setup requires a manual operator smoke test; no scheduler installer.
-- Crash exit codes and detailed startup fault classification are not yet persisted.
+- Bootstrap persists exit codes and exception causes; Windows forced-kill exit-code visibility is limited and must be smoke-tested.
 - Entire existing suite has not been executed in the target repository environment.
 
-**Do not mark this PR merge-ready on the strength of a green test suite alone
-until these requirements and Windows-specific tests have been addressed.**
+**Do not mark this PR merge-ready without running the offline suite and Windows VPS smoke checks, resolving any discovered failures.**
+
+
+## Worker configuration (no secrets committed)
+
+The registry is deliberately explicit about optional configuration:
+
+| ID | Mode | Required environment | Expected result without config |
+| --- | --- | --- | --- |
+| `polymarket_yes_no_parity` | paper | none | started |
+| `copy_bigggggggg` | paper | `COPY_WALLET`, `COPY_AUDUSD` | BLOCKED_CONFIG |
+| `copy_bonereaper` | observe | `BONEREAPER_WALLET`, `BONEREAPER_AUDUSD`, `BONEREAPER_FX_AT`, `BONEREAPER_SOURCE_VERIFIED=YES` after independent attribution verification | BLOCKED_CONFIG |
+| `prediction_telegram` | observe service | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_USER_ID`, `TELEGRAM_CHAT_ID` | BLOCKED_CONFIG |
+
+Set credentials only in ignored local `.env` and verify Bonereaper source identity before setting YES. Config blockage on one service must not block the other workers.
+
+## Offline verification commands — zero GitHub Actions usage
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m compileall -q src tests
+.\.venv\Scripts\python.exe -m pytest tests/test_fleet_registry.py tests/test_fleet_lifecycle.py tests/test_fleet_heartbeat.py tests/test_fleet_process_integration.py tests/test_platform_ps1_contract.py -q
+.\.venv\Scripts\python.exe -m pytest -q
+powershell -NoProfile -Command '$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\scripts\platform.ps1),[ref]$t,[ref]$e)|Out-Null; if($e.Count){$e|Out-String|Write-Error;exit 1}'
+```
