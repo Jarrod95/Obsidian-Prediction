@@ -309,6 +309,8 @@ def status(entry, root: Path = RUNTIME) -> dict:
             age = float("inf")
         if age > 300:
             state, reason = "DEGRADED", "scan heartbeat stale"
+        elif hb.get("last_error"):
+            state, reason = "DEGRADED", str(hb["last_error"])[:300]
         elif hb.get("last_scan_completed"):
             state = "IDLE" if hb.get("idle_reason") else "HEALTHY"
             reason = hb.get("idle_reason") or "scan completed"
