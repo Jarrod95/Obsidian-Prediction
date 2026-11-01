@@ -63,7 +63,7 @@ def reconcile(root: Path = RUNTIME, timestamp: float | None = None) -> list[dict
         except Exception as exc:
             results.append({"id": entry.id, "state": "UNKNOWN",
                             "reason": f"{type(exc).__name__}: {exc}"})
-    atomic(root / "controller.json", {"updated": now(), "pid": __import__("os").getpid(),
+    atomic(root / "controller.json", {"schema_version": 1, "updated": now(), "pid": __import__("os").getpid(),
                                      "workers": results})
     return results
 
