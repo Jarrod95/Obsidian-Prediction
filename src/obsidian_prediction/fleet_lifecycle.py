@@ -108,9 +108,9 @@ def identity(entry, record: dict | None):
         ):
             return None
         command = proc.cmdline()
-        if len(command) < 4 or command[1:3] != ["-u", "-m"]:
+        if len(command) < 5 or command[1:4] != ["-u", "-m", "obsidian_prediction.fleet_bootstrap"]:
             return None
-        if command[3] != entry.module or command[4:] != list(entry.args):
+        if command[4] != entry.module or command[5:] != list(entry.args):
             return None
         if fingerprint(entry.module, entry.args) != record["args_sha256"]:
             return None
@@ -184,7 +184,8 @@ def spawn(entry, root: Path = RUNTIME) -> dict:
         run_id = uuid.uuid4().hex
         stdout = root / f"{entry.id}.{run_id}.stdout.log"
         stderr = root / f"{entry.id}.{run_id}.stderr.log"
-        argv = [sys.executable, "-u", "-m", entry.module, *entry.args]
+        argv = [sys.executable, "-u", "-m", "obsidian_prediction.fleet_bootstrap",
+                entry.module, *entry.args]
         root.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ, OBSIDIAN_FLEET_RUN_ID=run_id,
                    OBSIDIAN_FLEET_WORKER_ID=entry.id,
