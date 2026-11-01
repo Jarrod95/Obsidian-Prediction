@@ -70,11 +70,18 @@ def validate(items: object) -> list[Entry]:
         ):
             errors.append(f"{label}: args must be nonempty strings without control characters")
             continue
-        if "--mode" not in args or args.count("--mode") != 1:
-            errors.append(f"{label}: explicit --mode paper|observe required exactly once")
+        if args.count("--mode") > 1:
+            errors.append(f"{label}: duplicate --mode argument")
             continue
-        index = args.index("--mode")
-        mode = args[index + 1] if index + 1 < len(args) else ""
+        if "--mode" in args:
+            index = args.index("--mode")
+            arg_mode = args[index + 1] if index + 1 < len(args) else ""
+            if "mode" in item and item["mode"] != arg_mode:
+                errors.append(f"{label}: registry mode conflicts with CLI --mode")
+                continue
+            mode = arg_mode
+        else:
+            mode = item.get("mode")
         if mode not in _ALLOWED_MODES:
             errors.append(f"{label}: unsafe or unknown mode {mode!r}; use paper|observe")
             continue
