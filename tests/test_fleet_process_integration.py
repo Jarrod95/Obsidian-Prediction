@@ -1,0 +1,87 @@
+"""Real local subprocess integration, no external network/credentials."""
+import json
+import multiprocessing
+import os
+import sys
+import time
+
+import psutil
+import pytest
+
+from obsidian_prediction.fleet_registry import validate
+from obsidian_prediction.fleet_lifecycle import identity, spawn, status, stop, set_desired
+from obsidian_prediction.fleet_controller import decision
+
+
+def fake(*extra):
+    return validate([{
+        "id": "fake_worker", "enabled": True,
+        "module": "obsidian_prediction._fleet_test_worker",
+        "args": ["run", "--mode", "paper", *extra],
+    }])[0]
+
+
+@pytest.mark.timeout(30)
+def test_double_start_same_owner_and_scoped_stop(tmp_path):
+    entry = fake()
+    original = psutil.Process().pid
+    try:
+        first = spawn(entry, tmp_path)
+        assert first["state"] == "STARTING"
+        second = spawn(entry, tmp_path)
+        assert second["pid"] == first["pid"]
+        assert psutil.pid_exists(first["pid"])
+        assert status(entry, tmp_path)["state"] == "ALIVE_NOT_READY"
+    finally:
+        stopped = stop(entry, tmp_path)
+    assert stopped["state"] == "STOPPED"
+    assert psutil.pid_exists(original)
+
+
+@pytest.mark.timeout(30)
+def test_stale_pid_record_does_not_kill_unrelated_process(tmp_path):
+    entry = fake()
+    path = tmp_path / "fake_worker.json"
+    path.write_text(json.dumps({"pid": os.getpid(), "created": 0,
+                                "interpreter": sys.executable,
+                                "args_sha256": "wrong"}), encoding="utf-8")
+    assert stop(entry, tmp_path)["state"] == "UNKNOWN"
+    assert psutil.pid_exists(os.getpid())
+
+
+@pytest.mark.timeout(30)
+def test_child_tree_shutdown(tmp_path):
+    pid_file = tmp_path / "child.pid"
+    entry = fake("--spawn-child", "--child-pid-file", str(pid_file))
+    try:
+        result = spawn(entry, tmp_path)
+        deadline = time.monotonic() + 8
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert pid_file.is_file(), "fake worker child not spawned"
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+        assert psutil.pid_exists(child_pid)
+    finally:
+        stopped = stop(entry, tmp_path)
+    assert stopped["state"] == "STOPPED"
+    assert not psutil.pid_exists(result["pid"])
+    assert not psutil.pid_exists(child_pid)
+
+
+@pytest.mark.timeout(30)
+def test_sudden_exit_not_reported_alive(tmp_path):
+    entry = fake("--exit-code", "17")
+    result = spawn(entry, tmp_path)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and psutil.pid_exists(result["pid"]):
+        time.sleep(0.1)
+    assert status(entry, tmp_path)["state"] in ("UNKNOWN", "STOPPED")
+    stop(entry, tmp_path)
+
+
+def test_restart_budget_survives_serialization():
+    prior = {"events": [100, 200, 300, 400, 500]}
+    persisted = json.loads(json.dumps(prior))
+    restart, updated = decision(persisted, 550, True, "STOPPED")
+    assert restart is False
+    assert updated["quarantined"] is True
