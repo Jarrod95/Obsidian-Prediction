@@ -56,10 +56,13 @@ def fingerprint(module: str, args: tuple[str, ...]) -> str:
 
 @contextlib.contextmanager
 def lock(name: str, root: Path = RUNTIME, timeout: float = 12):
-    """Per-worker exclusive mkdir lock with conservative stale recovery.
+    """Exclusive filesystem lock; Windows-safe under concurrent callers.
 
-    A stale lock is removed only if its owner PID is demonstrably absent.
-    Unreadable locks block instead of creating a duplicate process.
+    The lock directory is owned until *both* its metadata and directory are
+    removed. A competing thread may transiently open owner.json on Windows,
+    so release retries sharing violations rather than abandoning a poisoned
+    lock directory. An owner with a live matching PID+creation time is never
+    stolen, even if the lock appears old.
     """
     root.mkdir(parents=True, exist_ok=True)
     path = root / (name + ".lock")
@@ -67,11 +70,16 @@ def lock(name: str, root: Path = RUNTIME, timeout: float = 12):
     while True:
         try:
             path.mkdir()
-            atomic(path / "owner.json", {"pid": os.getpid(), "created": psutil.Process().create_time()})
+            atomic(path / "owner.json", {
+                "pid": os.getpid(), "created": psutil.Process().create_time()
+            })
             break
         except FileExistsError:
             owner = read(path / "owner.json")
-            age = time.time() - path.stat().st_mtime
+            try:
+                age = time.time() - path.stat().st_mtime
+            except FileNotFoundError:
+                continue  # another owner just released
             if age > 30 and owner:
                 try:
                     p = psutil.Process(int(owner["pid"]))
@@ -79,21 +87,36 @@ def lock(name: str, root: Path = RUNTIME, timeout: float = 12):
                 except psutil.NoSuchProcess:
                     stale = True
                 except (psutil.AccessDenied, KeyError, TypeError, ValueError):
-                    stale = False  # never steal a lock when ownership cannot be checked
+                    stale = False
                 if stale:
-                    (path / "owner.json").unlink(missing_ok=True)
-                    with contextlib.suppress(OSError):
+                    try:
+                        (path / "owner.json").unlink(missing_ok=True)
                         path.rmdir()
-                    continue
+                        continue
+                    except OSError:
+                        pass  # Windows readers may still hold a handle
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Could not acquire worker lock: {name}")
             time.sleep(0.08)
     try:
         yield
     finally:
-        (path / "owner.json").unlink(missing_ok=True)
-        with contextlib.suppress(OSError):
-            path.rmdir()
+        # A Windows stat/read by a contender can temporarily prevent unlink.
+        # Do not leave a permanent stale lock because of one sharing violation.
+        release_deadline = time.monotonic() + timeout
+        while True:
+            try:
+                (path / "owner.json").unlink(missing_ok=True)
+                path.rmdir()
+                break
+            except FileNotFoundError:
+                if not path.exists():
+                    break
+            except OSError:
+                pass
+            if time.monotonic() >= release_deadline:
+                raise TimeoutError(f"Could not release worker lock: {name}")
+            time.sleep(0.05)
 
 
 def identity(entry, record: dict | None):
@@ -103,11 +126,14 @@ def identity(entry, record: dict | None):
         proc = psutil.Process(int(record["pid"]))
         if abs(proc.create_time() - float(record["created"])) > 1:
             return None
-        if os.path.normcase(os.path.realpath(proc.exe())) != os.path.normcase(
-            os.path.realpath(record["interpreter"])
-        ):
-            return None
         command = proc.cmdline()
+        expected = os.path.normcase(os.path.realpath(record["interpreter"]))
+        actual = os.path.normcase(os.path.realpath(proc.exe()))
+        launched_as = os.path.normcase(os.path.realpath(command[0])) if command else ""
+        # Virtualenv launchers on Windows can delegate to base python.exe.
+        # Require the recorded venv argv[0] and validated module/args below.
+        if actual != expected and (os.name != "nt" or launched_as != expected):
+            return None
         if len(command) < 5 or command[1:4] != ["-u", "-m", "obsidian_prediction.fleet_bootstrap"]:
             return None
         if command[4] != entry.module or command[5:] != list(entry.args):

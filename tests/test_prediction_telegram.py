@@ -19,6 +19,8 @@ def test_authorization_is_fail_closed():
 
 
 def test_missing_environment_refuses_start(monkeypatch):
+    monkeypatch.setattr("obsidian_prediction.prediction_telegram.load_dotenv",
+                        lambda *args, **kwargs: None)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_USER_ID", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
@@ -61,7 +63,7 @@ def test_leaderboard_shared_capital_is_unranked(tmp_path):
     db = connection(path)
     bots = {"polymarket_yes_no_parity": {"mode": "paper", "enabled": True, "venue": "polymarket"}}
     try:
-        result = render("leaderboard", ["all", "month"], bots, db, path)
+        result = render("leaderboard", ["all", "all"], bots, db, path)
         assert "UNRANKED" in result
         assert "17.25" in result
         assert "LIVE: NOT CONFIGURED" in result
