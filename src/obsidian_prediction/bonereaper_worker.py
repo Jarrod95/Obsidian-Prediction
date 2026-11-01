@@ -363,6 +363,7 @@ class PaperBot:
         events = self.activity(since)
         for event in sorted(events, key=lambda e: (int(e.get("timestamp", 0)), event_key(e))):
             self.handle(event)
+        mark_heartbeat(discovered=len(events), evaluated=len(events))
         # Advance only after each event decision is durably committed. A crash\n        # before this checkpoint is safe because the event key is unique.\n        if events:\n            self.set("watermark", max(since, max(int(e["timestamp"]) for e in events)))
         self.set("last_poll_success", now_utc())
         self.set("last_error", "")
