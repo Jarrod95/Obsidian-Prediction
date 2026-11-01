@@ -144,9 +144,13 @@ def unmanaged(entry, owned_pid: int | None = None) -> list[int]:
     for proc in psutil.process_iter(["pid", "cmdline"]):
         try:
             argv = proc.info["cmdline"] or []
-            if (proc.pid != owned_pid and len(argv) >= 4
-                    and argv[1:4] == ["-u", "-m", entry.module]
-                    and (entry.kind == "service" or argv[4:] == list(entry.args))):
+            direct = len(argv) >= 4 and argv[1:4] == ["-u", "-m", entry.module]
+            wrapped = (len(argv) >= 5 and
+                       argv[1:5] == ["-u", "-m", "obsidian_prediction.fleet_bootstrap", entry.module])
+            if proc.pid != owned_pid and (
+                (direct and (entry.kind == "service" or argv[4:] == list(entry.args))) or
+                (wrapped and (entry.kind == "service" or argv[5:] == list(entry.args)))
+            ):
                 matches.append(proc.pid)
         except (psutil.Error, OSError):
             continue
