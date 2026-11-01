@@ -23,4 +23,8 @@ def mark(**fields) -> None:
         state = {"run_id": run_id, "worker_id": worker}
     state.update(fields)
     state["updated"] = datetime.now(timezone.utc).isoformat()
-    atomic(path, state)
+    try:
+        atomic(path, state)
+    except OSError:
+        # Monitoring failure must not interrupt paper research or ledger writes.
+        return
