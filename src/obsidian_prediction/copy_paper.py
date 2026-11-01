@@ -30,6 +30,8 @@ def utcnow():
     return datetime.now(timezone.utc).isoformat()
 
 
+from .fleet_heartbeat import mark as mark_heartbeat
+
 class Worker:
     def __init__(self, wallet: str, db: str, initial_aud: Decimal = D(500),
                  max_fraction: Decimal = D("0.10"), poll: int = 30):
@@ -284,9 +286,16 @@ class Worker:
 
     def run(self, once=False):
         while True:
+            mark_heartbeat(last_scan_started=utcnow(), last_scan_completed=None,
+                           idle_reason="source scan in progress")
             try:
                 self.tick()
-            except Exception:
+                mark_heartbeat(last_scan_completed=utcnow(),
+                               last_successful_data_observation=utcnow(),
+                               idle_reason="paper source poll completed")
+            except Exception as exc:
+                mark_heartbeat(last_error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                               idle_reason="source poll failed")
                 LOG.exception("Tick failed; retrying without placing real orders")
             if once:
                 break
