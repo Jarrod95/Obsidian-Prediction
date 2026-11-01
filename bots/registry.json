@@ -27,14 +27,40 @@
     "kind": "service",
     "enabled": true,
     "module": "obsidian_prediction.prediction_telegram",
-    "args": [
-      "--mode",
-      "observe"
-    ],
+    "args": [],
     "requires_env": [
       "TELEGRAM_BOT_TOKEN",
       "TELEGRAM_USER_ID",
       "TELEGRAM_CHAT_ID"
+    ],
+    "mode": "observe"
+  },
+  {
+    "id": "copy_bigggggggg",
+    "kind": "bot",
+    "enabled": true,
+    "module": "obsidian_prediction.copy_paper",
+    "mode": "paper",
+    "args": [],
+    "requires_env": [
+      "COPY_WALLET",
+      "COPY_AUDUSD"
+    ]
+  },
+  {
+    "id": "copy_bonereaper",
+    "kind": "bot",
+    "enabled": true,
+    "module": "obsidian_prediction.bonereaper_worker",
+    "mode": "observe",
+    "args": [
+      "run"
+    ],
+    "requires_env": [
+      "BONEREAPER_WALLET",
+      "BONEREAPER_AUDUSD",
+      "BONEREAPER_FX_AT",
+      "BONEREAPER_SOURCE_VERIFIED"
     ]
   }
 ]
