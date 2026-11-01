@@ -141,12 +141,20 @@ def identity_check(entry, record: dict | None):
         launched_as = os.path.normcase(os.path.realpath(command[0]))
         recorded_image = record.get("executable_image")
         if recorded_image:
-            # Capture the actual OS executable at spawn time. On Windows it can
-            # differ from sys.executable due to venv redirectors; matching the
-            # recorded image plus immutable process birth time and exact argv
-            # is stronger than guessing how Python resolved the launcher.
-            if actual != os.path.normcase(os.path.realpath(recorded_image)):
-                return None, "recorded executable image mismatch"
+            # Windows venv redirectors can briefly appear as the executable
+            # immediately after Popen, then resolve to the base python.exe.
+            # Do not reject that transition if the recorded *launch command*
+            # still matches our interpreter and the running image is Python.
+            # PID birth time, exact bootstrap argv and fingerprint have already
+            # been verified above. Never allow this fallback on other OSes.
+            recorded = os.path.normcase(os.path.realpath(recorded_image))
+            if actual != recorded:
+                python_image = os.path.basename(actual).lower() in (
+                    "python.exe", "pythonw.exe"
+                )
+                trusted_launcher = launched_as == expected
+                if os.name != "nt" or not (python_image and trusted_launcher):
+                    return None, "recorded executable image mismatch"
         elif actual != expected and (os.name != "nt" or launched_as != expected):
             return None, "legacy Python executable identity mismatch"
         if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
