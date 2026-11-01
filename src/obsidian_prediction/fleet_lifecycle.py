@@ -139,8 +139,16 @@ def identity_check(entry, record: dict | None):
         expected = os.path.normcase(os.path.realpath(record["interpreter"]))
         actual = os.path.normcase(os.path.realpath(proc.exe()))
         launched_as = os.path.normcase(os.path.realpath(command[0]))
-        if actual != expected and (os.name != "nt" or launched_as != expected):
-            return None, "Python executable identity mismatch"
+        recorded_image = record.get("executable_image")
+        if recorded_image:
+            # Capture the actual OS executable at spawn time. On Windows it can
+            # differ from sys.executable due to venv redirectors; matching the
+            # recorded image plus immutable process birth time and exact argv
+            # is stronger than guessing how Python resolved the launcher.
+            if actual != os.path.normcase(os.path.realpath(recorded_image)):
+                return None, "recorded executable image mismatch"
+        elif actual != expected and (os.name != "nt" or launched_as != expected):
+            return None, "legacy Python executable identity mismatch"
         if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
             return None, "owned process exited"
         return proc, "verified"
@@ -257,7 +265,8 @@ def spawn(entry, root: Path = RUNTIME, *, respect_desired: bool = False) -> dict
                 sha = "UNKNOWN"
         data = {"schema_version": 1, "pid": child.pid, "created": proc.create_time(),
                 "created_utc": datetime.fromtimestamp(proc.create_time(), timezone.utc).isoformat(),
-                "interpreter": os.path.realpath(sys.executable), "module": entry.module,
+                "interpreter": os.path.realpath(sys.executable),
+                "executable_image": proc.exe(), "module": entry.module,
                 "args_sha256": fingerprint(entry.module, entry.args),
                 "args": list(entry.args), "run_id": run_id, "launched": now(),
                 "controller": os.getpid(), "release_sha": sha,
