@@ -1,5 +1,4 @@
 """Run-specific worker health is not inferred from trade counts."""
-import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
