@@ -15,6 +15,7 @@ def main():
     p.add_argument("run")
     p.add_argument("--mode", choices=("paper", "observe"), required=True)
     p.add_argument("--interval", type=float, default=0.1)
+    p.add_argument("--test-nonce")
     p.add_argument("--exit-code", type=int)
     p.add_argument("--child-pid-file")
     p.add_argument("--spawn-child", action="store_true")
