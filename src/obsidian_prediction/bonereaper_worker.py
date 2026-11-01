@@ -39,6 +39,8 @@ def event_key(row: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+from .fleet_heartbeat import mark as mark_heartbeat
+
 class PaperBot:
     def __init__(self, db: str, wallet: str, audusd: str, *,
                  fx_at: str, observe: bool = True, initial_aud: str = "500",
@@ -367,9 +369,16 @@ class PaperBot:
 
     def run(self, once: bool) -> None:
         while not self.stopping:
+            mark_heartbeat(last_scan_started=now_utc(), last_scan_completed=None,
+                           idle_reason="scan in progress")
             try:
                 self.tick()
+                mark_heartbeat(last_scan_completed=now_utc(),
+                               last_successful_data_observation=now_utc(),
+                               idle_reason="paper source poll completed")
             except (httpx.HTTPError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                mark_heartbeat(last_error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                               idle_reason="source data unavailable")
                 self.set("last_error", str(exc)[:300])
                 self.conn.execute("INSERT INTO incidents VALUES (?,?)", (now_utc(), str(exc)[:500]))
                 if once:
