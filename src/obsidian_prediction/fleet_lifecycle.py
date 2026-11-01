@@ -71,7 +71,11 @@ def lock(name: str, root: Path = RUNTIME, timeout: float = 12):
             break
         except FileExistsError:
             owner = read(path / "owner.json")
-            age = time.time() - path.stat().st_mtime
+            try:
+                age = time.time() - path.stat().st_mtime
+            except FileNotFoundError:
+                # Previous lock owner released between mkdir and stat; retry.
+                continue
             if age > 30 and owner:
                 try:
                     p = psutil.Process(int(owner["pid"]))
@@ -103,11 +107,15 @@ def identity(entry, record: dict | None):
         proc = psutil.Process(int(record["pid"]))
         if abs(proc.create_time() - float(record["created"])) > 1:
             return None
-        if os.path.normcase(os.path.realpath(proc.exe())) != os.path.normcase(
-            os.path.realpath(record["interpreter"])
-        ):
-            return None
         command = proc.cmdline()
+        expected = os.path.normcase(os.path.realpath(record["interpreter"]))
+        actual = os.path.normcase(os.path.realpath(proc.exe()))
+        launched_as = os.path.normcase(os.path.realpath(command[0])) if command else ""
+        # On Windows, venv python.exe is often a redirector: the running image
+        # is base python.exe while the original argv[0] is the venv launcher.
+        # Require argv[0] to match the recorded interpreter in this case.
+        if actual != expected and (os.name != "nt" or launched_as != expected):
+            return None
         if len(command) < 5 or command[1:4] != ["-u", "-m", "obsidian_prediction.fleet_bootstrap"]:
             return None
         if command[4] != entry.module or command[5:] != list(entry.args):
