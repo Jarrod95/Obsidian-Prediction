@@ -1,5 +1,6 @@
 """Real local subprocess integration, no external network/credentials."""
 import json
+import uuid
 import os
 import sys
 import time
@@ -12,11 +13,14 @@ from obsidian_prediction.fleet_lifecycle import identity, spawn, status, stop, s
 from obsidian_prediction.fleet_controller import decision
 
 
+_TEST_RUN_NONCE = uuid.uuid4().hex
+
+
 def fake(*extra):
     return validate([{
         "id": "fake_worker", "enabled": True,
         "module": "obsidian_prediction._fleet_test_worker",
-        "args": ["run", "--mode", "paper", *extra],
+        "args": ["run", "--mode", "paper", "--test-nonce", _TEST_RUN_NONCE, *extra],
     }])[0]
 
 
