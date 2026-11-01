@@ -167,7 +167,13 @@ def unmanaged(entry, owned_pid: int | None = None) -> list[int]:
 
 def missing_config(entry) -> list[str]:
     load_dotenv(ROOT / ".env", override=False)
-    return [key for key in entry.requires_env if not os.getenv(key)]
+    missing = [key for key in entry.requires_env if not os.getenv(key)]
+    if entry.module == "obsidian_prediction.bonereaper_worker":
+        if os.getenv("BONEREAPER_SOURCE_VERIFIED") != "YES":
+            missing.append("BONEREAPER_SOURCE_VERIFIED=YES (official source verification)")
+        if os.getenv("BONEREAPER_MODE", "observe") != entry.mode:
+            missing.append("BONEREAPER_MODE must match registry mode")
+    return sorted(set(missing))
 
 
 def spawn(entry, root: Path = RUNTIME) -> dict:
