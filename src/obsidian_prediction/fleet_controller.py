@@ -46,8 +46,9 @@ def reconcile(root: Path = RUNTIME, timestamp: float | None = None) -> list[dict
             allowed, updated = decision(history, timestamp, desired(entry, root),
                                         current["state"])
             if allowed:
-                result = spawn(entry, root)
-                updated["events"].append(timestamp)
+                result = spawn(entry, root, respect_desired=True)
+                if result["state"] == "STARTING":
+                    updated["events"].append(timestamp)
                 updated["last_restart"] = now()
             else:
                 result = dict(current)
