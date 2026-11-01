@@ -176,8 +176,11 @@ def missing_config(entry) -> list[str]:
     return sorted(set(missing))
 
 
-def spawn(entry, root: Path = RUNTIME) -> dict:
+def spawn(entry, root: Path = RUNTIME, *, respect_desired: bool = False) -> dict:
     with lock(entry.id, root):
+        if respect_desired and not desired(entry, root):
+            return {"id": entry.id, "state": "STOPPED",
+                    "reason": "operator desired state changed before launch"}
         if not entry.enabled:
             return {"id": entry.id, "state": "DISABLED", "reason": "registry disabled"}
         missing = missing_config(entry)
@@ -214,7 +217,8 @@ def spawn(entry, root: Path = RUNTIME) -> dict:
                                      creationflags=flags, stdin=subprocess.DEVNULL, env=env)
         proc = psutil.Process(child.pid)
         sha = os.environ.get("OBSIDIAN_RELEASE_SHA", "UNKNOWN")
-        data = {"pid": child.pid, "created": proc.create_time(),
+        data = {"schema_version": 1, "pid": child.pid, "created": proc.create_time(),
+                "created_utc": datetime.fromtimestamp(proc.create_time(), timezone.utc).isoformat(),
                 "interpreter": os.path.realpath(sys.executable), "module": entry.module,
                 "args_sha256": fingerprint(entry.module, entry.args),
                 "args": list(entry.args), "run_id": run_id, "launched": now(),
