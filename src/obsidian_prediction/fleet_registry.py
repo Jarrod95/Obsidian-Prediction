@@ -121,7 +121,7 @@ def plan(entries: list[Entry], bot: str = "all") -> dict:
         raise RegistryError(f"Unknown bot {bot!r}; inspect bots/registry.json")
     enabled = [e.id for e in selected if e.enabled]
     disabled = [e.id for e in selected if not e.enabled]
-    return {"expected": len(selected), "enabled": enabled, "disabled": disabled,
+    return {"schema_version": 1, "expected": len(selected), "enabled": enabled, "disabled": disabled,
             "attempted": [], "alive": [], "ready": [], "degraded": [],
             "blocked": [], "failed": [],
             "workers": [dict(e.as_dict(), status="PENDING" if e.enabled else "DISABLED",
