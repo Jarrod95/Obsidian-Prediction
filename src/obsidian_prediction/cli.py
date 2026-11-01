@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ROOT, Settings
+from .fleet_registry import RegistryError, load as load_fleet, plan as fleet_plan
 from .exchanges import PublicPolymarket
 
 
@@ -37,6 +38,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="obsidian-prediction")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor")
+    fleet = sub.add_parser("fleet")
+    fleet.add_argument("action", choices=["plan", "status"])
+    fleet.add_argument("--bot", default="all")
     bots = sub.add_parser("bots")
     bots.add_argument("action", choices=["list", "status"])
     bots.add_argument("bot_id", nargs="?")
@@ -47,24 +51,37 @@ def main() -> None:
     cp.add_argument("--limit", type=int, default=100)
     args = parser.parse_args()
     settings = Settings.from_environment()
-    if args.command == "doctor":
-        print(
-            json.dumps(
-                {
-                    "version": "0.1.0",
-                    "live_trading": False,
-                    "data_dir": str(settings.data_dir),
-                    "config_ok": True,
-                },
-                indent=2,
-            )
-        )
+    if args.command in ("doctor", "fleet"):
+        try:
+            entries = load_fleet(ROOT / "bots" / "registry.json")
+            snapshot = fleet_plan(entries, getattr(args, "bot", "all"))
+            if args.command == "doctor":
+                import importlib.util
+                import sys
+                modules = {e.id: bool(importlib.util.find_spec(e.module))
+                           for e in entries}
+                problems = [f"Missing module: {name}" for name, ok in modules.items()
+                            if not ok]
+                snapshot = {"config_ok": not problems, "registry_valid": True,
+                            "python": sys.executable, "version": sys.version,
+                            "data_dir": str(settings.data_dir),
+                            "runtime_exists": (ROOT / "runtime").is_dir(),
+                            "modules": modules, "problems": problems,
+                            "live_trading": False, "fleet": snapshot}
+            else:
+                snapshot["observation"] = "UNVERIFIED: offline registry plan, not process readiness"
+            print(json.dumps(snapshot, indent=2))
+            if args.command == "doctor" and not snapshot["config_ok"]:
+                raise SystemExit(1)
+        except (RegistryError, ImportError, ValueError) as exc:
+            print(json.dumps({"config_ok": False, "error": str(exc)}, indent=2))
+            raise SystemExit(2) from exc
     elif args.command == "bots":
-        entries = registry()
+        entries = [e.as_dict() for e in load_fleet(ROOT / "bots" / "registry.json")]
         if args.action == "list":
             print(json.dumps(entries, indent=2))
         else:
-            matches = [x for x in entries if x.get("bot_id") == args.bot_id]
+            matches = [x for x in entries if x.get("id") == args.bot_id]
             if not matches:
                 parser.error("Unknown bot id")
             print(json.dumps(matches[0], indent=2))
