@@ -98,3 +98,22 @@ def test_report_never_conflates_alive_with_ready():
     assert summary["alive"] == [entry.id]
     assert summary["ready"] == []
     assert summary["degraded"] == [entry.id]
+
+def test_controller_cannot_reenable_intentionally_stopped_worker(tmp_path, monkeypatch):
+    from obsidian_prediction.fleet_lifecycle import spawn
+    entry = worker()
+    set_desired(entry, tmp_path, False)
+    # A monitor may have decided to spawn before the stop command.
+    # Re-evaluate under the launch lock before any Popen call.
+    with patch("obsidian_prediction.fleet_lifecycle.subprocess.Popen") as popen:
+        result = spawn(entry, tmp_path, respect_desired=True)
+    assert result["state"] == "STOPPED"
+    popen.assert_not_called()
+    assert not desired(entry, tmp_path)
+
+
+def test_blocked_config_does_not_consume_restart_budget():
+    from obsidian_prediction.fleet_controller import decision
+    allowed, state = decision({"events": []}, 1000, True, "BLOCKED_CONFIG")
+    assert not allowed
+    assert state["events"] == []
