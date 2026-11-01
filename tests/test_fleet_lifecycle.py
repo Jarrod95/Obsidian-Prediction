@@ -136,3 +136,32 @@ def test_windows_venv_redirector_matches_owned_process():
             assert identity(entry, record) is proc
         else:
             assert identity(entry, record) is None
+
+
+def test_recorded_actual_python_image_matches_windows_venv_redirector():
+    import sys
+    import psutil
+    from obsidian_prediction.fleet_lifecycle import identity_check
+    entry = worker()
+    proc = Mock()
+    proc.create_time.return_value = 100.0
+    proc.exe.return_value = r"C:\Python312\python.exe"
+    proc.cmdline.return_value = [
+        r"C:\Python312\python.exe", "-u", "-m",
+        "obsidian_prediction.fleet_bootstrap", entry.module, *entry.args
+    ]
+    proc.is_running.return_value = True
+    proc.status.return_value = psutil.STATUS_RUNNING
+    record = {
+        "pid": 321, "created": 100.0,
+        "interpreter": sys.executable,
+        "executable_image": r"C:\Python312\python.exe",
+        "args_sha256": fingerprint(entry.module, entry.args),
+    }
+    with patch("obsidian_prediction.fleet_lifecycle.psutil.Process", return_value=proc):
+        verified, reason = identity_check(entry, record)
+        assert verified is proc, reason
+        record["executable_image"] = r"C:\Different\python.exe"
+        verified, reason = identity_check(entry, record)
+        assert verified is None
+        assert reason == "recorded executable image mismatch"
