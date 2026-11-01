@@ -1,6 +1,5 @@
 """Real local subprocess integration, no external network/credentials."""
 import json
-import multiprocessing
 import os
 import sys
 import time
