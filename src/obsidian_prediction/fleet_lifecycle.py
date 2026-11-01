@@ -119,32 +119,45 @@ def lock(name: str, root: Path = RUNTIME, timeout: float = 12):
             time.sleep(0.05)
 
 
-def identity(entry, record: dict | None):
+def identity_check(entry, record: dict | None):
+    """Return (verified process, reason) without ever trusting a PID alone."""
     if not record:
-        return None
+        return None, "no ownership record"
     try:
         proc = psutil.Process(int(record["pid"]))
         if abs(proc.create_time() - float(record["created"])) > 1:
-            return None
+            return None, "PID creation time mismatch"
         command = proc.cmdline()
+        if not command:
+            return None, "empty process command line"
+        if (len(command) < 5 or
+                command[1:4] != ["-u", "-m", "obsidian_prediction.fleet_bootstrap"] or
+                command[4] != entry.module or command[5:] != list(entry.args)):
+            return None, "process module or arguments mismatch"
+        if fingerprint(entry.module, entry.args) != record["args_sha256"]:
+            return None, "recorded argument fingerprint mismatch"
         expected = os.path.normcase(os.path.realpath(record["interpreter"]))
         actual = os.path.normcase(os.path.realpath(proc.exe()))
-        launched_as = os.path.normcase(os.path.realpath(command[0])) if command else ""
-        # Virtualenv launchers on Windows can delegate to base python.exe.
-        # Require the recorded venv argv[0] and validated module/args below.
-        if actual != expected and (os.name != "nt" or launched_as != expected):
-            return None
-        if len(command) < 5 or command[1:4] != ["-u", "-m", "obsidian_prediction.fleet_bootstrap"]:
-            return None
-        if command[4] != entry.module or command[5:] != list(entry.args):
-            return None
-        if fingerprint(entry.module, entry.args) != record["args_sha256"]:
-            return None
+        launched_as = os.path.normcase(os.path.realpath(command[0]))
+        recorded_image = record.get("executable_image")
+        if recorded_image:
+            # Capture the actual OS executable at spawn time. On Windows it can
+            # differ from sys.executable due to venv redirectors; matching the
+            # recorded image plus immutable process birth time and exact argv
+            # is stronger than guessing how Python resolved the launcher.
+            if actual != os.path.normcase(os.path.realpath(recorded_image)):
+                return None, "recorded executable image mismatch"
+        elif actual != expected and (os.name != "nt" or launched_as != expected):
+            return None, "legacy Python executable identity mismatch"
         if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
-            return None
-        return proc
-    except (psutil.Error, OSError, KeyError, TypeError, ValueError):
-        return None
+            return None, "owned process exited"
+        return proc, "verified"
+    except (psutil.Error, OSError, KeyError, TypeError, ValueError) as exc:
+        return None, f"identity check failed: {type(exc).__name__}"
+
+
+def identity(entry, record: dict | None):
+    return identity_check(entry, record)[0]
 
 
 def record_path(entry, root: Path) -> Path:
@@ -214,11 +227,11 @@ def spawn(entry, root: Path = RUNTIME, *, respect_desired: bool = False) -> dict
             return {"id": entry.id, "state": "BLOCKED_CONFIG",
                     "reason": "missing environment keys: " + ", ".join(missing)}
         current = read(record_path(entry, root))
-        proc = identity(entry, current)
+        proc, ownership_reason = identity_check(entry, current)
         external = unmanaged(entry, proc.pid if proc else None)
         if external:
             return {"id": entry.id, "state": "BLOCKED_CONFIG",
-                    "reason": "exact unmanaged worker already running",
+                    "reason": "matching worker cannot be safely adopted: " + ownership_reason,
                     "unmanaged_pids": external}
         if proc:
             set_desired(entry, root, True)
@@ -252,7 +265,8 @@ def spawn(entry, root: Path = RUNTIME, *, respect_desired: bool = False) -> dict
                 sha = "UNKNOWN"
         data = {"schema_version": 1, "pid": child.pid, "created": proc.create_time(),
                 "created_utc": datetime.fromtimestamp(proc.create_time(), timezone.utc).isoformat(),
-                "interpreter": os.path.realpath(sys.executable), "module": entry.module,
+                "interpreter": os.path.realpath(sys.executable),
+                "executable_image": proc.exe(), "module": entry.module,
                 "args_sha256": fingerprint(entry.module, entry.args),
                 "args": list(entry.args), "run_id": run_id, "launched": now(),
                 "controller": os.getpid(), "release_sha": sha,
