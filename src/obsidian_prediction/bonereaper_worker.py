@@ -20,6 +20,7 @@ from pathlib import Path
 import httpx
 
 from .bonereaper_primitives import classify_btc_market, decimal, simulate_depth
+from .fleet_heartbeat import mark as mark_heartbeat
 
 BOT_ID = "polymarket_bonereaper_btc_copy"
 DATA = "https://data-api.polymarket.com"
@@ -361,15 +362,26 @@ class PaperBot:
         events = self.activity(since)
         for event in sorted(events, key=lambda e: (int(e.get("timestamp", 0)), event_key(e))):
             self.handle(event)
-        # Advance only after each event decision is durably committed. A crash\n        # before this checkpoint is safe because the event key is unique.\n        if events:\n            self.set("watermark", max(since, max(int(e["timestamp"]) for e in events)))
+        mark_heartbeat(discovered=len(events), evaluated=len(events))
+        # Advance only after each event decision is durably committed. A crash
+        # before this checkpoint is safe because the event key is unique.
+        if events:
+            self.set("watermark", max(since, max(int(e["timestamp"]) for e in events)))
         self.set("last_poll_success", now_utc())
         self.set("last_error", "")
 
     def run(self, once: bool) -> None:
         while not self.stopping:
+            mark_heartbeat(last_scan_started=now_utc(), last_scan_completed=None,
+                           idle_reason="scan in progress")
             try:
                 self.tick()
+                mark_heartbeat(last_error=None, last_scan_completed=now_utc(),
+                               last_successful_data_observation=now_utc(),
+                               idle_reason="paper source poll completed")
             except (httpx.HTTPError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                mark_heartbeat(last_error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                               idle_reason="source data unavailable")
                 self.set("last_error", str(exc)[:300])
                 self.conn.execute("INSERT INTO incidents VALUES (?,?)", (now_utc(), str(exc)[:500]))
                 if once:

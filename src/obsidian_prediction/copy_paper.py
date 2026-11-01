@@ -13,6 +13,7 @@ import sqlite3
 import re
 import time
 from .copy_events import setup as setup_events, fetch_activity, ingest
+from .fleet_heartbeat import mark as mark_heartbeat
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -185,6 +186,7 @@ class Worker:
         watermark = int(self.get("event_watermark"))
         events = fetch_activity(self.http, self.wallet, watermark)
         ingest(self.conn, events)
+        mark_heartbeat(discovered=len(events), evaluated=len(events))
         if events:
             self.set("event_watermark", max(watermark, max(int(e["timestamp"]) for e in events)))
         # Always settle holdings first; settlement does not require a source sale.
@@ -284,9 +286,16 @@ class Worker:
 
     def run(self, once=False):
         while True:
+            mark_heartbeat(last_scan_started=utcnow(), last_scan_completed=None,
+                           idle_reason="source scan in progress")
             try:
                 self.tick()
-            except Exception:
+                mark_heartbeat(last_error=None, last_scan_completed=utcnow(),
+                               last_successful_data_observation=utcnow(),
+                               idle_reason="paper source poll completed")
+            except Exception as exc:
+                mark_heartbeat(last_error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                               idle_reason="source poll failed")
                 LOG.exception("Tick failed; retrying without placing real orders")
             if once:
                 break

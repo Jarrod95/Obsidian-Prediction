@@ -15,6 +15,7 @@ from .fx import FXProvider
 from .markets import Book, Level, parity
 from .paper_account import migrate, sizing, state, record_entry
 from .settlement import reconcile, deliver
+from .fleet_heartbeat import mark as mark_heartbeat
 
 D = Decimal
 BOT = "polymarket_yes_no_parity"
@@ -121,6 +122,8 @@ def prioritize_markets(markets, now, horizon_hours):
 async def scan(client, db, args):
     """Bounded parallel I/O; SQLite writes remain serialized on the event loop."""
     started = time.monotonic()
+    mark_heartbeat(last_scan_started=utc().isoformat(), last_scan_completed=None,
+                   discovered=0, evaluated=0, idle_reason="scan in progress")
     discovered = []
     async for market in client.markets(limit=args.limit, max_pages=args.pages):
         discovered.append(market)
@@ -209,6 +212,10 @@ async def scan(client, db, args):
             if args.verbose:
                 print("Market skipped", market.get("id"), type(exc).__name__, str(exc)[:180])
     elapsed = time.monotonic() - started
+    mark_heartbeat(last_scan_completed=utc().isoformat(), discovered=len(discovered),
+                   evaluated=len(markets), last_successful_data_observation=(utc().isoformat() if stats["books"] else None),
+                   idle_reason=("no eligible markets" if not markets else
+                                "no eligible signals" if stats["candidates"] == 0 else None))
     print(f"Scanned {len(markets)} in {elapsed:.1f}s | eligible={stats['eligible']} "
           f"books={stats['books']} candidates={stats['candidates']} "
           f"entered={stats['entered']} rejected={stats['rejected']} errors={stats['errors']}")
