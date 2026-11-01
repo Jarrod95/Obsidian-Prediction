@@ -32,7 +32,7 @@ def test_double_start_same_owner_and_scoped_stop(tmp_path):
         first = spawn(entry, tmp_path)
         assert first["state"] == "STARTING"
         second = spawn(entry, tmp_path)
-        assert second["pid"] == first["pid"]
+        assert second.get("pid") == first["pid"], {"first": first, "second": second}
         assert psutil.pid_exists(first["pid"])
         assert status(entry, tmp_path)["state"] == "ALIVE_NOT_READY"
     finally:
@@ -105,7 +105,8 @@ def test_concurrent_start_contenders_share_owned_pid(tmp_path):
     try:
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(lambda _: _contender(tmp_path), range(4)))
-        assert len({r["pid"] for r in results}) == 1
+        assert all("pid" in r for r in results), results
+        assert len({r["pid"] for r in results}) == 1, results
     finally:
         assert stop(fake(), tmp_path)["state"] == "STOPPED"
 
