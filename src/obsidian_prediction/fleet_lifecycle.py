@@ -146,7 +146,7 @@ def unmanaged(entry, owned_pid: int | None = None) -> list[int]:
             argv = proc.info["cmdline"] or []
             if (proc.pid != owned_pid and len(argv) >= 4
                     and argv[1:4] == ["-u", "-m", entry.module]
-                    and argv[4:] == list(entry.args)):
+                    and (entry.kind == "service" or argv[4:] == list(entry.args))):
                 matches.append(proc.pid)
         except (psutil.Error, OSError):
             continue
