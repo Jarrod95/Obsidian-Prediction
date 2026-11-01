@@ -75,7 +75,10 @@ def test_sudden_exit_not_reported_alive(tmp_path):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and psutil.pid_exists(result["pid"]):
         time.sleep(0.1)
-    assert status(entry, tmp_path)["state"] in ("UNKNOWN", "STOPPED")
+    observed = status(entry, tmp_path)
+    assert observed["state"] in ("UNKNOWN", "STOPPED")
+    assert observed.get("last_exit_code") == 17, observed
+    assert observed.get("last_exit_cause") == "system_exit"
     stop(entry, tmp_path)
 
 
