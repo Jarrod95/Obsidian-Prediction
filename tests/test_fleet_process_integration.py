@@ -121,3 +121,24 @@ def test_telegram_not_configured_is_blocked_independently(tmp_path, monkeypatch)
     monkeypatch.setattr("obsidian_prediction.fleet_lifecycle.load_dotenv", lambda *a, **k: None)
     assert set(missing_config(entry)) == set(entry.requires_env)
     assert missing_config(fake()) == []
+
+@pytest.mark.timeout(30)
+def test_unmanaged_direct_worker_is_not_duplicated_or_killed(tmp_path):
+    import subprocess
+    entry = fake()
+    external = subprocess.Popen([sys.executable, "-u", "-m", entry.module, *entry.args],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 5
+        from obsidian_prediction.fleet_lifecycle import unmanaged
+        while time.monotonic() < deadline and external.pid not in unmanaged(entry):
+            time.sleep(0.1)
+        assert external.pid in unmanaged(entry)
+        result = spawn(entry, tmp_path)
+        assert result["state"] == "BLOCKED_CONFIG"
+        assert external.pid in result["unmanaged_pids"]
+        assert stop(entry, tmp_path)["state"] == "STOPPED"
+        assert external.poll() is None, "manager killed an unmanaged Python process"
+    finally:
+        external.terminate()
+        external.wait(timeout=5)
