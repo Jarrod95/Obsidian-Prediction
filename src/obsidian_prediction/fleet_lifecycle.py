@@ -342,6 +342,26 @@ def spawn(entry, root: Path = RUNTIME, *, respect_desired: bool = False) -> dict
                 "reason": "spawned; heartbeat not yet observed"}
 
 
+def request_owned_shutdown(proc, *, platform: str | None = None) -> None:
+    """Request shutdown of the exact identity-verified process, never a group.
+
+    Windows CTRL_BREAK_EVENT uses a *console process-group ID*, not an
+    arbitrary worker PID. Windows venv redirectors can replace the recorded
+    launcher PID with a child interpreter PID, which is not necessarily the
+    group leader. Calling os.kill(that_pid, CTRL_BREAK_EVENT) can broadcast to
+    unrelated console processes, including the supervisor itself.
+
+    Target the already-verified PID with terminate() on Windows; retain the
+    bounded child-tree cleanup in stop(). This is a forceful Windows stop, not
+    a graceful console event. A future graceful shutdown requires a separately
+    authenticated in-process stop channel, never group broadcast.
+    """
+    if (os.name if platform is None else platform) == "nt":
+        proc.terminate()
+    else:
+        proc.send_signal(signal.SIGTERM)
+
+
 def stop(entry, root: Path = RUNTIME, timeout: float = 5) -> dict:
     with lock(entry.id, root):
         set_desired(entry, root, False)
@@ -355,13 +375,11 @@ def stop(entry, root: Path = RUNTIME, timeout: float = 5) -> dict:
                     "reason": "no verified owned process"}
         children = proc.children(recursive=True)
         targets = [*children, proc]
-        # Give the owned Python process a chance to run its cleanup handlers.
-        # Windows worker processes are created in independent process groups.
+        # Only signal the identity-verified process. Windows process-group
+        # control events can target unrelated console clients after a venv
+        # interpreter redirect, so Windows uses a specific-PID termination.
         try:
-            if os.name == "nt":
-                os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
-            else:
-                proc.send_signal(signal.SIGTERM)
+            request_owned_shutdown(proc)
         except (OSError, psutil.Error, AttributeError):
             with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
                 proc.terminate()

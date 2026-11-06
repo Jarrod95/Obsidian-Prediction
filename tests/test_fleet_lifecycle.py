@@ -197,3 +197,26 @@ def test_windows_redirector_image_transition_keeps_verified_ownership():
         verified, reason = identity_check(entry, record)
         assert verified is None
         assert reason == "process module or arguments mismatch"
+
+
+
+def test_windows_request_owned_shutdown_never_broadcasts_to_console():
+    """A verified Windows worker shutdown must target exactly its PID."""
+    from obsidian_prediction.fleet_lifecycle import request_owned_shutdown
+    proc = Mock()
+    with patch("obsidian_prediction.fleet_lifecycle.os.kill") as broadcast:
+        request_owned_shutdown(proc, platform="nt")
+    proc.terminate.assert_called_once_with()
+    proc.send_signal.assert_not_called()
+    broadcast.assert_not_called()
+
+
+def test_posix_request_owned_shutdown_retains_graceful_signal():
+    import signal
+    from obsidian_prediction.fleet_lifecycle import request_owned_shutdown
+    proc = Mock()
+    with patch("obsidian_prediction.fleet_lifecycle.os.kill") as broadcast:
+        request_owned_shutdown(proc, platform="posix")
+    proc.send_signal.assert_called_once_with(signal.SIGTERM)
+    proc.terminate.assert_not_called()
+    broadcast.assert_not_called()
