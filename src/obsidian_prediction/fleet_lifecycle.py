@@ -168,13 +168,16 @@ def identity(entry, record: dict | None):
     return identity_check(entry, record)[0]
 
 
-def reconcile_bootstrap(entry, record: dict | None, root: Path):
-    """Recover a worker spawned by a Windows venv redirector.
+def reconcile_bootstrap(entry, record: dict | None, root: Path, *,
+                        exclude_pid: int | None = None,
+                        candidate_pids: set[int] | None = None):
+    """Recover a uniquely verified Windows venv redirector interpreter.
 
-    The launcher may exit after creating the actual interpreter, invalidating
-    the Popen PID. Only adopt a child with this launch's random run ID, the
-    exact worker ID/runtime and the complete expected bootstrap argv.
-    Never discover ownership merely from the module name or a reused PID.
+    The process must carry this launch's unguessable run ID, exact worker ID,
+    runtime, module and argv. When a verified launcher is still alive,
+    exclude its PID and consider only independently observed matching
+    processes. Never adopt a direct/unmanaged worker or guess among multiple
+    candidates.
     """
     if os.name != "nt" or not record or not record.get("run_id"):
         return None
@@ -183,8 +186,13 @@ def reconcile_bootstrap(entry, record: dict | None, root: Path):
         entry.module, *entry.args,
     ]
     expected_runtime = os.path.normcase(os.path.realpath(root))
+    matches = []
     for candidate in psutil.process_iter(["pid", "cmdline"]):
         try:
+            if candidate.pid == exclude_pid:
+                continue
+            if candidate_pids is not None and candidate.pid not in candidate_pids:
+                continue
             cmd = candidate.info["cmdline"] or []
             if cmd[1:] != expected_args:
                 continue
@@ -197,26 +205,61 @@ def reconcile_bootstrap(entry, record: dict | None, root: Path):
                 continue
             if not candidate.is_running() or candidate.status() == psutil.STATUS_ZOMBIE:
                 continue
-            if candidate.create_time() < float(record["created"]) - 1:
+            if candidate.create_time() < float(record["created"]):
+                # Never reverse-adopt the older venv shim after the actual
+                # interpreter has already been verified and recorded.
                 continue
-            image = os.path.basename(candidate.exe()).lower()
-            if image not in ("python.exe", "pythonw.exe"):
+            if os.path.basename(candidate.exe()).lower() not in ("python.exe", "pythonw.exe"):
                 continue
-            restored = dict(record)
-            restored["pid"] = candidate.pid
-            restored["created"] = candidate.create_time()
-            restored["created_utc"] = datetime.fromtimestamp(
-                candidate.create_time(), timezone.utc
-            ).isoformat()
-            restored["executable_image"] = candidate.exe()
-            # The run ID and environment bind this interpreter to our launch.
-            # Persist its actual command launcher for subsequent identity checks.
-            restored["interpreter"] = os.path.realpath(cmd[0])
-            atomic(record_path(entry, root), restored)
-            return candidate
+            matches.append((candidate, cmd))
         except (psutil.Error, OSError, ValueError, TypeError, KeyError):
             continue
-    return None
+    if len(matches) != 1:
+        # Zero matches or multiple equally plausible processes: fail closed.
+        return None
+    candidate, cmd = matches[0]
+    restored = dict(record)
+    if exclude_pid is not None and record.get("pid") == exclude_pid:
+        # Retain the exact original launcher identity so it can be excluded
+        # from duplicate detection only while it still verifies as ours.
+        restored["redirector_pid"] = exclude_pid
+        restored["redirector_created"] = record["created"]
+    restored["pid"] = candidate.pid
+    restored["created"] = candidate.create_time()
+    restored["created_utc"] = datetime.fromtimestamp(
+        candidate.create_time(), timezone.utc
+    ).isoformat()
+    restored["executable_image"] = candidate.exe()
+    restored["interpreter"] = os.path.realpath(cmd[0])
+    atomic(record_path(entry, root), restored)
+    return candidate
+
+
+def owned_redirector(entry, record: dict | None, root: Path, pid: int) -> bool:
+    """A known shim is not a second worker, but verify it on every use."""
+    if (os.name != "nt" or not record or record.get("redirector_pid") != pid
+            or not record.get("run_id")):
+        return False
+    try:
+        proc = psutil.Process(pid)
+        if (abs(proc.create_time() - float(record["redirector_created"])) > 0.3
+                or not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE):
+            return False
+        cmd = proc.cmdline()
+        if cmd[1:] != ["-u", "-m", "obsidian_prediction.fleet_bootstrap",
+                       entry.module, *entry.args]:
+            return False
+        env = proc.environ()
+        return (
+            env.get("OBSIDIAN_FLEET_RUN_ID") == record["run_id"]
+            and env.get("OBSIDIAN_FLEET_WORKER_ID") == entry.id
+            and os.path.normcase(os.path.realpath(
+                env.get("OBSIDIAN_FLEET_RUNTIME", "")
+            )) == os.path.normcase(os.path.realpath(root))
+            and os.path.basename(proc.exe()).lower() in ("python.exe", "pythonw.exe")
+        )
+    except (psutil.Error, OSError, ValueError, TypeError, KeyError):
+        return False
 
 
 def record_path(entry, root: Path) -> Path:
@@ -290,10 +333,29 @@ def spawn(entry, root: Path = RUNTIME, *, respect_desired: bool = False) -> dict
         if proc is None and current:
             recovered = reconcile_bootstrap(entry, current, root)
             if recovered is not None:
-                proc, ownership_reason = identity_check(
-                    entry, read(record_path(entry, root))
-                )
-        external = unmanaged(entry, proc.pid if proc else None)
+                current = read(record_path(entry, root))
+                proc, ownership_reason = identity_check(entry, current)
+        external = [
+            pid for pid in unmanaged(entry, proc.pid if proc else None)
+            if not owned_redirector(entry, current, root, pid)
+        ]
+        if proc is not None and external:
+            # Windows venv redirectors may retain a verified launcher PID
+            # while a second, real interpreter has the identical argv.
+            # Only adopt a UNIQUE child bound to this launch's run ID and
+            # environment; never discard unrelated unmanaged matches.
+            launcher_pid = proc.pid
+            recovered = reconcile_bootstrap(
+                entry, current, root, exclude_pid=launcher_pid,
+                candidate_pids=set(external),
+            )
+            if recovered is not None:
+                current = read(record_path(entry, root))
+                proc, ownership_reason = identity_check(entry, current)
+                external = [
+                    pid for pid in unmanaged(entry, proc.pid if proc else None)
+                    if not owned_redirector(entry, current, root, pid)
+                ]
         if external:
             return {"id": entry.id, "state": "BLOCKED_CONFIG",
                     "reason": "matching worker cannot be safely adopted: " + ownership_reason,
@@ -338,7 +400,21 @@ def spawn(entry, root: Path = RUNTIME, *, respect_desired: bool = False) -> dict
                 "stdout": str(stdout), "stderr": str(stderr)}
         atomic(record_path(entry, root), data)
         set_desired(entry, root, True)
-        return {"id": entry.id, "state": "STARTING", "pid": child.pid,
+        effective_pid = child.pid
+        if os.name == "nt" and sys.prefix != sys.base_prefix:
+            # Wait briefly for a venv redirector to spawn its real Python
+            # interpreter. Report the verified worker PID consistently to
+            # simultaneous contenders, rather than returning the shim PID.
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                recovered = reconcile_bootstrap(
+                    entry, data, root, exclude_pid=child.pid
+                )
+                if recovered is not None:
+                    effective_pid = recovered.pid
+                    break
+                time.sleep(0.05)
+        return {"id": entry.id, "state": "STARTING", "pid": effective_pid,
                 "reason": "spawned; heartbeat not yet observed"}
 
 
@@ -375,9 +451,9 @@ def stop(entry, root: Path = RUNTIME, timeout: float = 5) -> dict:
                     "reason": "no verified owned process"}
         children = proc.children(recursive=True)
         targets = [*children, proc]
-        # Only signal the identity-verified process. Windows process-group
-        # control events can target unrelated console clients after a venv
-        # interpreter redirect, so Windows uses a specific-PID termination.
+        # Only stop the verified worker PID. A venv redirector may leave
+        # the actual interpreter outside the recorded process group, making
+        # CTRL_BREAK_EVENT an unsafe console-wide broadcast on Windows.
         try:
             request_owned_shutdown(proc)
         except (OSError, psutil.Error, AttributeError):
